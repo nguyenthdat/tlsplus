@@ -1,0 +1,33 @@
+.gradle/
+build/
+out/
+generated/
+*.iml
+.idea/
+
+# Rust build output
+target/
+crate/**/target/
+
+# Local/native artifacts
+*.dylib
+*.so
+*.dll
+
+# Captures and private test material
+*.pcap
+*.pcapng
+*.keylog
+.kotlin
+
+# Workspace notes (intermediate artifacts)
+_workspace**/
+
+# Local opencode project config
+.opencode/
+.DS_Store
+_research_workspace/
+.playwright-mcp/
+_ja4_capture_workspace/
+test-results/
+AGENTS.md

@@ -1,0 +1,414 @@
+name: Build and release TLS+
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish/upload assets to a GitHub Release"
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag to create/use for manual publish, for example v0.1.0"
+        required: false
+        type: string
+      prerelease:
+        description: "Mark manual release as pre-release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  GRADLE_VERSION: "9.3.0"
+  JAVA_VERSION: "21"
+
+jobs:
+  test:
+    name: Test ${{ matrix.classifier }}
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - classifier: darwin-aarch64
+            runs_on: macos-14
+            rust_target: aarch64-apple-darwin
+          - classifier: windows-x86_64
+            runs_on: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            msvc_arch: x64
+          - classifier: windows-aarch64
+            runs_on: windows-11-arm
+            rust_target: aarch64-pc-windows-msvc
+            msvc_arch: arm64
+          - classifier: linux-x86_64
+            runs_on: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+          - classifier: linux-aarch64
+            runs_on: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Linux native build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build nasm pkg-config
+
+      - name: Install macOS native build tools
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install cmake ninja nasm pkg-config || true
+
+      - name: Install Windows native build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install ninja nasm -y --no-progress
+
+      - name: Configure MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
+      - name: Install Windows Npcap SDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sdkZip = Join-Path $env:RUNNER_TEMP "npcap-sdk.zip"
+          $sdkDir = Join-Path $env:RUNNER_TEMP "npcap-sdk"
+          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.15.zip" -OutFile $sdkZip
+          Expand-Archive -Path $sdkZip -DestinationPath $sdkDir -Force
+          $libSubdir = if ("${{ matrix.rust_target }}" -eq "aarch64-pc-windows-msvc") { "ARM64" } else { "x64" }
+          $libDir = Join-Path $sdkDir "Lib/$libSubdir"
+          if (!(Test-Path (Join-Path $libDir "Packet.lib"))) {
+            throw "Packet.lib not found in $libDir"
+          }
+          "LIB=$libDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "NPCAP_SDK_LIB_DIR=$libDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          key: test-${{ matrix.rust_target }}
+
+      - name: Run Rust tests (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked \
+            --manifest-path crate/tlsplus-core/Cargo.toml \
+            --target "${{ matrix.rust_target }}" \
+            --lib \
+            --bins
+
+      - name: Run Rust tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --locked `
+            --manifest-path crate/tlsplus-core/Cargo.toml `
+            --target "${{ matrix.rust_target }}" `
+            --lib `
+            --bins
+
+      - name: Setup Java for Gradle smoke test
+        if: matrix.classifier == 'linux-x86_64'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle for smoke test
+        if: matrix.classifier == 'linux-x86_64'
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-provider: basic
+
+      - name: Run Gradle build smoke test
+        if: matrix.classifier == 'linux-x86_64'
+        run: gradle build --stacktrace
+
+  native:
+    name: Native ${{ matrix.classifier }}
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - classifier: darwin-aarch64
+            runs_on: macos-14
+            rust_target: aarch64-apple-darwin
+            lib_name: libtlsplus_core.dylib
+          - classifier: windows-x86_64
+            runs_on: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            lib_name: tlsplus_core.dll
+            msvc_arch: x64
+          - classifier: windows-aarch64
+            runs_on: windows-11-arm
+            rust_target: aarch64-pc-windows-msvc
+            lib_name: tlsplus_core.dll
+            msvc_arch: arm64
+          - classifier: linux-x86_64
+            runs_on: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            lib_name: libtlsplus_core.so
+          - classifier: linux-aarch64
+            runs_on: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            lib_name: libtlsplus_core.so
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Linux native build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build nasm pkg-config
+
+      - name: Install macOS native build tools
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install cmake ninja nasm pkg-config || true
+
+      - name: Install Windows native build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install ninja nasm -y --no-progress
+
+      - name: Configure MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc_arch }}
+
+      - name: Install Windows Npcap SDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sdkZip = Join-Path $env:RUNNER_TEMP "npcap-sdk.zip"
+          $sdkDir = Join-Path $env:RUNNER_TEMP "npcap-sdk"
+          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.15.zip" -OutFile $sdkZip
+          Expand-Archive -Path $sdkZip -DestinationPath $sdkDir -Force
+          $libSubdir = if ("${{ matrix.rust_target }}" -eq "aarch64-pc-windows-msvc") { "ARM64" } else { "x64" }
+          $libDir = Join-Path $sdkDir "Lib/$libSubdir"
+          if (!(Test-Path (Join-Path $libDir "Packet.lib"))) {
+            throw "Packet.lib not found in $libDir"
+          }
+          "LIB=$libDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "NPCAP_SDK_LIB_DIR=$libDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          key: ${{ matrix.rust_target }}
+
+      - name: Build native library (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release \
+            --manifest-path crate/tlsplus-core/Cargo.toml \
+            --target "${{ matrix.rust_target }}"
+
+      - name: Build native library (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --release `
+            --manifest-path crate/tlsplus-core/Cargo.toml `
+            --target "${{ matrix.rust_target }}"
+
+      - name: Stage native artifact (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/native/${{ matrix.classifier }}"
+          cp "target/${{ matrix.rust_target }}/release/${{ matrix.lib_name }}" \
+            "dist/native/${{ matrix.classifier }}/${{ matrix.lib_name }}"
+
+      - name: Stage native artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/native/${{ matrix.classifier }}" | Out-Null
+          Copy-Item "target/${{ matrix.rust_target }}/release/${{ matrix.lib_name }}" `
+            "dist/native/${{ matrix.classifier }}/${{ matrix.lib_name }}"
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.classifier }}
+          path: dist/native
+          if-no-files-found: error
+          retention-days: 14
+
+  package:
+    name: Package all-platform Burp jar
+    runs-on: ubuntu-24.04
+    needs:
+      - test
+      - native
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build nasm pkg-config
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+          cache-provider: basic
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          key: package-linux-x86_64
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: build/prebuilt-native
+          pattern: native-*
+          merge-multiple: true
+
+      - name: Build all-platform Burp jar
+        run: gradle burpJar -Ptlsplus.nativeBundleDir=build/prebuilt-native --stacktrace
+
+      - name: Verify packaged native libraries
+        run: |
+          set -euo pipefail
+          jar tf build/libs/tlsplus-extension.jar > build/jar-contents.txt
+          expected=(
+            "native/darwin-aarch64/libtlsplus_core.dylib"
+            "native/windows-x86_64/tlsplus_core.dll"
+            "native/windows-aarch64/tlsplus_core.dll"
+            "native/linux-x86_64/libtlsplus_core.so"
+            "native/linux-aarch64/libtlsplus_core.so"
+          )
+          for entry in "${expected[@]}"; do
+            if ! grep -Fxq "$entry" build/jar-contents.txt; then
+              echo "Missing $entry from build/libs/tlsplus-extension.jar" >&2
+              exit 1
+            fi
+          done
+
+      - name: Stage release assets
+        env:
+          MANUAL_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          elif [[ -n "${MANUAL_RELEASE_TAG:-}" ]]; then
+            version="${MANUAL_RELEASE_TAG#v}"
+          else
+            version="ci-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+          fi
+          mkdir -p dist
+          cp build/libs/tlsplus-extension.jar "dist/tlsplus-extension-${version}-all-platforms.jar"
+          tar -czf "dist/tlsplus-native-libraries-${version}.tar.gz" -C build/prebuilt-native native
+          cp build/jar-contents.txt dist/jar-contents.txt
+          (cd dist && shasum -a 256 * > SHA256SUMS)
+
+      - name: Upload all-platform jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlsplus-extension-all-platforms
+          path: dist
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: ${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish_release) }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANUAL_RELEASE_TAG: ${{ inputs.release_tag }}
+          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="${MANUAL_RELEASE_TAG}"
+            if [[ -z "${tag}" ]]; then
+              echo "release_tag is required when publish_release=true on workflow_dispatch" >&2
+              exit 1
+            fi
+          fi
+
+          notes_file="$(mktemp)"
+          cat > "${notes_file}" <<EOF
+          TLS+ ${tag}
+
+          Assets:
+          - tlsplus-extension-*-all-platforms.jar: Burp-loadable fat jar containing native libraries for darwin-aarch64, windows-x86_64, windows-aarch64, linux-x86_64, and linux-aarch64.
+          - tlsplus-native-libraries-*.tar.gz: Native library bundle used to build the jar.
+          - SHA256SUMS: Asset checksums.
+          EOF
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" dist/* --clobber
+          else
+            args=(--title "TLS+ ${tag}" --notes-file "${notes_file}" --target "${GITHUB_SHA}")
+            if [[ "${PRERELEASE}" == "true" ]]; then
+              args+=(--prerelease)
+            fi
+            gh release create "${tag}" dist/* "${args[@]}"
+          fi
