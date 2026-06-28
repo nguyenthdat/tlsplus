@@ -42,11 +42,14 @@ jobs:
             runs_on: macos-14
             rust_target: aarch64-apple-darwin
           - classifier: windows-x86_64
-            runs_on: windows-latest
+            runs_on: windows-2022
             rust_target: x86_64-pc-windows-msvc
             msvc_arch: x64
           - classifier: windows-aarch64
-            runs_on: windows-11-arm
+            # Cross-compile from x64 Windows: boring-sys 5.1.0 only disables
+            # BoringSSL MSVC assembly on Windows when HOST != TARGET. Native
+            # windows-11-arm hits an upstream BoringSSL ASM object-selection bug.
+            runs_on: windows-2022
             rust_target: aarch64-pc-windows-msvc
             msvc_arch: arm64
           - classifier: linux-x86_64
@@ -124,7 +127,7 @@ jobs:
             --bins
 
       - name: Run Rust tests (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.rust_target != 'aarch64-pc-windows-msvc'
         shell: pwsh
         run: |
           cargo test --locked `
@@ -132,6 +135,17 @@ jobs:
             --target "${{ matrix.rust_target }}" `
             --lib `
             --bins
+
+      - name: Compile Rust tests (Windows ARM64)
+        if: runner.os == 'Windows' && matrix.rust_target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          cargo test --locked `
+            --manifest-path crate/tlsplus-core/Cargo.toml `
+            --target "${{ matrix.rust_target }}" `
+            --lib `
+            --bins `
+            --no-run
 
       - name: Setup Java for Gradle smoke test
         if: matrix.classifier == 'linux-x86_64'
@@ -163,12 +177,14 @@ jobs:
             rust_target: aarch64-apple-darwin
             lib_name: libtlsplus_core.dylib
           - classifier: windows-x86_64
-            runs_on: windows-latest
+            runs_on: windows-2022
             rust_target: x86_64-pc-windows-msvc
             lib_name: tlsplus_core.dll
             msvc_arch: x64
           - classifier: windows-aarch64
-            runs_on: windows-11-arm
+            # Cross-compile from x64 Windows for the same boring-sys/BoringSSL
+            # ASM reason documented in the test matrix above.
+            runs_on: windows-2022
             rust_target: aarch64-pc-windows-msvc
             lib_name: tlsplus_core.dll
             msvc_arch: arm64
