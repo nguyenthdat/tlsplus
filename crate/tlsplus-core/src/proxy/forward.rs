@@ -37,7 +37,7 @@ pub(crate) fn build_hyper_headers(headers: &[String]) -> hyper::HeaderMap {
             if let (Ok(header_name), Ok(header_value)) =
                 (name_trimmed.parse::<HeaderName>(), value_trimmed.parse())
             {
-                map.insert(header_name, header_value);
+                map.append(header_name, header_value);
             }
         }
     }
@@ -302,5 +302,18 @@ mod tests {
         assert!(is_transient_error("unexpected EOF"));
         assert!(!is_transient_error("404 not found"));
         assert!(!is_transient_error("invalid url"));
+    }
+
+    #[test]
+    fn build_hyper_headers_preserves_repeated_values() {
+        let headers = vec!["X-Value: one".to_owned(), "X-Value: two".to_owned()];
+        let map = build_hyper_headers(&headers);
+        let values: Vec<_> = map
+            .get_all("x-value")
+            .iter()
+            .map(|value| value.to_str().expect("test header is UTF-8"))
+            .collect();
+
+        assert_eq!(values, ["one", "two"]);
     }
 }

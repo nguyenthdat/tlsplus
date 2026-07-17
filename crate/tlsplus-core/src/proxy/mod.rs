@@ -21,7 +21,10 @@ pub(crate) mod forward;
 pub(crate) mod server;
 
 // Re-export public API
-pub use server::{proxy_send_request_impl, server_status_impl, start_local_server_impl, stop_local_server_impl};
+pub use server::{
+    proxy_send_request_async_impl, proxy_send_request_impl, server_status_impl,
+    start_local_server_impl, stop_local_server_impl,
+};
 
 // ---------------------------------------------------------------------------
 // Global async runtime — created lazily on first access

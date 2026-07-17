@@ -9,7 +9,7 @@
 //! cargo test --test proxy_transparency -- --ignored --nocapture
 //! ```
 
-use tlsplus_core::{proxy_send_request, ProxyRequest};
+use tlsplus_core::{ProxyRequest, proxy_send_request};
 
 /// Fetch a URL and verify compression transparency invariants:
 /// 1. Content-Encoding is preserved (not stripped)

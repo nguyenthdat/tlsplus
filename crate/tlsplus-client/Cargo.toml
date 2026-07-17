@@ -1,0 +1,23 @@
+[package]
+name = "tlsplus-client"
+version = "0.3.0"
+edition = "2024"
+publish = false
+description = "Ergonomic async HTTP client for TLS+ fingerprint profiles"
+
+[dependencies]
+bytes = "1"
+http = "1"
+serde = "1"
+serde_json = "1"
+serde_urlencoded = "0.7"
+thiserror = "2"
+tlsplus-core = { path = "../tlsplus-core" }
+tokio = { version = "1", features = ["time"] }
+url = "2"
+
+[dev-dependencies]
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }

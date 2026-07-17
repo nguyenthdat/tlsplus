@@ -8,6 +8,7 @@ It is built as a Kotlin/JVM Burp extension with a Rust `cdylib` packaged inside 
 
 - Burp Montoya extension shell written in Kotlin.
 - Native Rust core exposed to Kotlin through UniFFI-generated bindings.
+- Ergonomic `tlsplus-client` Rust API with reqwest-style client and request builders.
 - Embedded local HTTP forward proxy built with Tokio, Hyper, and BoringSSL.
 - Automatic proxy startup on extension load, defaulting to `127.0.0.1:43117`.
 - Burp HTTP handler that redirects outgoing Burp traffic through the local TLS+ proxy when active mode is enabled.
@@ -31,6 +32,11 @@ Burp Suite
        -> Embedded Hyper forward proxy
        -> Per-profile BoringSSL clients and connection pooling
        -> Streaming request/response forwarding
+
+Rust applications
+  -> tlsplus-client
+       -> Reqwest-style Client / RequestBuilder / Response API
+       -> Async direct requests through tlsplus-core
 ```
 
 Key files:
@@ -43,6 +49,7 @@ Key files:
 - `crate/tlsplus-core/src/proxy/` contains the embedded forwarding proxy.
 - `crate/tlsplus-core/src/profiles.rs` defines built-in TLS fingerprint profiles.
 - `crate/tlsplus-core/src/ja4.rs` computes JA3/JA4 fingerprints from raw ClientHello bytes.
+- `crate/tlsplus-client/` provides the ergonomic Rust HTTP client API.
 
 ## Requirements
 
@@ -92,7 +99,30 @@ Useful Rust-only commands:
 cargo check -p tlsplus-core
 cargo test -p tlsplus-core
 cargo clippy -p tlsplus-core
+cargo test -p tlsplus-client
 ```
+
+## Rust HTTP Client
+
+Use `tlsplus-client` when calling TLS+ from Rust. It hides the underlying Hyper
+request and connector types while preserving profile-aware connection pooling:
+
+```rust
+let response = tlsplus_client::get("https://example.com")
+    .profile("chrome_149")
+    .header("accept", "text/html")
+    .send()
+    .await?
+    .error_for_status()?;
+
+println!("{}", response.text().await?);
+```
+
+For multiple requests, build and reuse a `tlsplus_client::Client` with a default
+profile, timeout, and headers. The lower-level `ProxyRequest` API remains
+available in `tlsplus-core` for UniFFI and Burp integration. The async client
+must run on a Tokio runtime; direct request and response bodies are currently
+buffered in memory.
 
 ## Load In Burp
 

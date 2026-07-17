@@ -15,19 +15,12 @@
 //! - Response body streams (`Incoming` → `BoxBody`) — zero buffering.
 //! - Full hop-by-hop header stripping per RFC 7230 §6.1.
 
-use std::{
-    convert::Infallible,
-    net::SocketAddr,
-    sync::Arc,
-};
+use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{
-    Request, Response, StatusCode, Uri,
-    body::Incoming,
-    server::conn::http1,
-    service::service_fn,
+    Request, Response, StatusCode, Uri, body::Incoming, server::conn::http1, service::service_fn,
 };
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
@@ -77,7 +70,9 @@ fn is_hop_by_hop(name: &str) -> bool {
 /// `X-Tlsplus-Profile`, `X-Tlsplus-Timeout`), strips internal + hop-by-hop
 /// headers, forwards the streaming request body to the target, and streams the
 /// response body back.
-async fn proxy_service(req: Request<Incoming>) -> Result<Response<http_body_util::combinators::BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+async fn proxy_service(
+    req: Request<Incoming>,
+) -> Result<Response<http_body_util::combinators::BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     // ── Decompose the incoming request ──
     // Extract all metadata BEFORE touching the body stream to avoid borrow-
     // checker issues when moving parts out of the request.
@@ -151,9 +146,7 @@ async fn proxy_service(req: Request<Incoming>) -> Result<Response<http_body_util
     //
     // The `Accept-Encoding` header is preserved so the server responds
     // with an encoding the browser natively decompresses.
-    let mut req_builder = Request::builder()
-        .method(req_method)
-        .uri(uri.clone());
+    let mut req_builder = Request::builder().method(req_method).uri(uri.clone());
 
     // NOTE: Do NOT set the Host header explicitly — hyper's legacy client
     // handles it via `set_host: true` (default). Explicitly setting `host`
@@ -382,21 +375,16 @@ pub fn stop_local_server_impl() -> ServerStatus {
 // Synchronous proxy_send_request
 // ---------------------------------------------------------------------------
 
-/// Synchronously forward a single request through the profile-specific client.
-///
-/// This function blocks the calling thread using `Runtime::block_on`. It does
-/// NOT use the local proxy server — it directly constructs and sends an HTTP
-/// request via the cached per-profile hyper client on the global Tokio
-/// runtime.
-pub fn proxy_send_request_impl(request: crate::ProxyRequest) -> crate::ProxyResponse {
-    let result = RUNTIME.block_on(super::forward::forward_request(
+async fn send_request(request: crate::ProxyRequest) -> crate::ProxyResponse {
+    let result = super::forward::forward_request(
         &request.url,
         &request.method,
         request.headers,
         request.body,
         &request.profile,
         request.timeout_secs,
-    ));
+    )
+    .await;
 
     match result {
         Ok(mut resp) => {
@@ -414,8 +402,24 @@ pub fn proxy_send_request_impl(request: crate::ProxyRequest) -> crate::ProxyResp
     }
 }
 
+/// Asynchronously forward a single request through the profile-specific client.
+///
+/// This is the non-blocking Rust entry point used by higher-level clients. It
+/// does not start or route through the local proxy server.
+pub async fn proxy_send_request_async_impl(request: crate::ProxyRequest) -> crate::ProxyResponse {
+    send_request(request).await
+}
+
+/// Synchronously forward a single request through the profile-specific client.
+///
+/// This function blocks the calling thread using `Runtime::block_on`. It does
+/// NOT use the local proxy server — it directly constructs and sends an HTTP
+/// request via the cached per-profile hyper client on the global Tokio
+/// runtime.
+pub fn proxy_send_request_impl(request: crate::ProxyRequest) -> crate::ProxyResponse {
+    RUNTIME.block_on(send_request(request))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
-

@@ -256,6 +256,17 @@ pub fn proxy_send_request(request: ProxyRequest) -> ProxyResponse {
     proxy::proxy_send_request_impl(request)
 }
 
+/// Asynchronously forward one [`ProxyRequest`] through the internal Hyper and
+/// BoringSSL client without starting the local proxy server.
+///
+/// Rust applications should normally use the ergonomic `tlsplus-client` crate.
+/// This lower-level function exists so that client can reuse the TLS engine
+/// without blocking a Tokio worker thread. The UniFFI boundary continues to use
+/// [`proxy_send_request`].
+pub async fn proxy_send_request_async(request: ProxyRequest) -> ProxyResponse {
+    proxy::proxy_send_request_async_impl(request).await
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -338,6 +349,23 @@ mod tests {
         let response = proxy_send_request(request);
         assert_eq!(response.id, "test-1");
         // Expected to fail (connection refused or timeout), but not panic
+        assert!(response.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn proxy_send_request_async_returns_forwarding_errors() {
+        let request = ProxyRequest {
+            id: "test-async-1".to_owned(),
+            method: "GET".to_owned(),
+            url: "http://127.0.0.1:1/nonexistent".to_owned(),
+            headers: vec![],
+            body: vec![],
+            profile: "pass-through".to_owned(),
+            timeout_secs: 2,
+        };
+
+        let response = proxy_send_request_async(request).await;
+        assert_eq!(response.id, "test-async-1");
         assert!(response.error.is_some());
     }
 

@@ -15,7 +15,7 @@
 //! cargo test --test cloudflare_qa -- --ignored --nocapture
 //! ```
 
-use tlsplus_core::{proxy_send_request, ProxyRequest};
+use tlsplus_core::{ProxyRequest, proxy_send_request};
 
 const CHROME_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36";
 
