@@ -14,8 +14,8 @@ use boring::ssl::{SslConnector, SslMethod};
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 use hyper_boring::HttpsConnector;
-use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 
 use crate::tls;

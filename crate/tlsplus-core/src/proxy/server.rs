@@ -15,12 +15,19 @@
 //! - Response body streams (`Incoming` → `BoxBody`) — zero buffering.
 //! - Full hop-by-hop header stripping per RFC 7230 §6.1.
 
-use std::{convert::Infallible, net::SocketAddr, sync::Arc};
+use std::{
+    convert::Infallible,
+    net::SocketAddr,
+    sync::Arc,
+};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{
-    Request, Response, StatusCode, Uri, body::Incoming, server::conn::http1, service::service_fn,
+    Request, Response, StatusCode, Uri,
+    body::Incoming,
+    server::conn::http1,
+    service::service_fn,
 };
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
@@ -70,9 +77,7 @@ fn is_hop_by_hop(name: &str) -> bool {
 /// `X-Tlsplus-Profile`, `X-Tlsplus-Timeout`), strips internal + hop-by-hop
 /// headers, forwards the streaming request body to the target, and streams the
 /// response body back.
-async fn proxy_service(
-    req: Request<Incoming>,
-) -> Result<Response<http_body_util::combinators::BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+async fn proxy_service(req: Request<Incoming>) -> Result<Response<http_body_util::combinators::BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     // ── Decompose the incoming request ──
     // Extract all metadata BEFORE touching the body stream to avoid borrow-
     // checker issues when moving parts out of the request.
@@ -146,7 +151,9 @@ async fn proxy_service(
     //
     // The `Accept-Encoding` header is preserved so the server responds
     // with an encoding the browser natively decompresses.
-    let mut req_builder = Request::builder().method(req_method).uri(uri.clone());
+    let mut req_builder = Request::builder()
+        .method(req_method)
+        .uri(uri.clone());
 
     // NOTE: Do NOT set the Host header explicitly — hyper's legacy client
     // handles it via `set_host: true` (default). Explicitly setting `host`
