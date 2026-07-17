@@ -24,10 +24,8 @@ crate/**/target/
 _workspace**/
 
 # Local opencode project config
-.opencode/
 .DS_Store
 _research_workspace/
 .playwright-mcp/
 _ja4_capture_workspace/
 test-results/
-AGENTS.md
