@@ -29,3 +29,4 @@ _research_workspace/
 .playwright-mcp/
 _ja4_capture_workspace/
 test-results/
+.cloakbrowser-artifacts/
