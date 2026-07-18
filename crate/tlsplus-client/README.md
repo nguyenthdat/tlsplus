@@ -48,3 +48,23 @@ The initial API supports reusable clients, per-client and per-request TLS
 profiles/timeouts, default and request headers, query serialization, raw or
 JSON request bodies, buffered bytes/text/JSON responses, and
 `error_for_status`.
+
+## Runnable example
+
+A self-contained example ships in `examples/basic.rs`. It fetches a URL
+through a reusable client, calls `error_for_status`, and prints the status,
+final URL, TLS profile, and (optionally truncated) text body.
+
+```sh
+# Use the default URL and profile:
+cargo run -p tlsplus-client --example basic
+
+# Customize both:
+cargo run -p tlsplus-client --example basic -- https://httpbin.org/ip chrome_149
+
+# Use a different profile:
+cargo run -p tlsplus-client --example basic -- https://example.com firefox_current
+```
+
+Positional arguments: `[URL] [PROFILE]`. Defaults are `https://example.com/`
+and `chrome_149`.
