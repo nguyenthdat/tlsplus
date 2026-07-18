@@ -1,5 +1,7 @@
 use bytes::Bytes;
-use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use http::{HeaderMap, StatusCode};
+use http_body_util::BodyExt;
+use hyper::body::Incoming;
 use serde::de::DeserializeOwned;
 use url::Url;
 
@@ -20,44 +22,27 @@ pub struct Response {
 }
 
 impl Response {
-    pub(crate) fn from_core(
-        response: tlsplus_core::ProxyResponse,
+    pub(crate) async fn from_hyper(
+        response: hyper::Response<Incoming>,
         url: Url,
         profile: String,
     ) -> Result<Self> {
-        let status = StatusCode::from_u16(response.status_code).map_err(|_| {
-            Error::InvalidResponseStatus {
-                status: response.status_code,
+        let (parts, body) = response.into_parts();
+        let body = match body.collect().await {
+            Ok(body) => body.to_bytes(),
+            Err(error) => {
+                return Err(Error::Request {
+                    url: Box::new(url),
+                    profile,
+                    message: format!("failed to read response body: {error}"),
+                });
             }
-        })?;
-        let mut headers = HeaderMap::new();
-
-        for raw in response.headers {
-            let (name, value) =
-                raw.split_once(':')
-                    .ok_or_else(|| Error::InvalidResponseHeader {
-                        header: raw.clone(),
-                        reason: "missing ':' separator".to_owned(),
-                    })?;
-            let header_name = HeaderName::from_bytes(name.trim().as_bytes()).map_err(|error| {
-                Error::InvalidResponseHeader {
-                    header: raw.clone(),
-                    reason: error.to_string(),
-                }
-            })?;
-            let header_value = HeaderValue::from_str(value.trim()).map_err(|error| {
-                Error::InvalidResponseHeader {
-                    header: raw.clone(),
-                    reason: error.to_string(),
-                }
-            })?;
-            headers.append(header_name, header_value);
-        }
+        };
 
         Ok(Self {
-            status,
-            headers,
-            body: Bytes::from(response.body),
+            status: parts.status,
+            headers: parts.headers,
+            body,
             url,
             profile,
         })
@@ -143,19 +128,16 @@ mod tests {
     use super::*;
 
     fn response(status: u16, body: &[u8]) -> Response {
-        Response::from_core(
-            tlsplus_core::ProxyResponse {
-                id: "test".to_owned(),
-                status_code: status,
-                headers: vec!["Content-Type: application/json".to_owned()],
-                body: body.to_vec(),
-                ja4: None,
-                error: None,
-            },
-            Url::parse("https://example.com/").expect("static URL is valid"),
-            "pass-through".to_owned(),
-        )
-        .expect("test response is valid")
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", "application/json".parse().expect("header"));
+
+        Response {
+            status: StatusCode::from_u16(status).expect("test status"),
+            headers,
+            body: Bytes::copy_from_slice(body),
+            url: Url::parse("https://example.com/").expect("static URL is valid"),
+            profile: "pass-through".to_owned(),
+        }
     }
 
     #[test]

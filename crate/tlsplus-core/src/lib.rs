@@ -8,6 +8,7 @@
 use std::sync::{LazyLock, Mutex};
 
 pub mod ja4;
+pub mod http_client;
 pub mod profiles;
 pub mod proxy;
 pub mod tls;

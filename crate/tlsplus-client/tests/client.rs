@@ -77,7 +77,7 @@ struct Reply {
 }
 
 #[tokio::test]
-async fn ergonomic_client_sends_json_through_core_without_external_network() {
+async fn ergonomic_client_sends_json_directly_through_core_hyper() {
     let (url, mut captured) = spawn_test_server().await;
     let client = Client::builder()
         .profile("pass-through")

@@ -1,7 +1,8 @@
 //! Ergonomic asynchronous HTTP client for TLS+ fingerprint profiles.
 //!
-//! `tlsplus-client` keeps Hyper and BoringSSL details inside `tlsplus-core` and
-//! provides a request-builder API familiar to reqwest users.
+//! `tlsplus-client` builds Hyper requests and sends them directly through the
+//! profile-aware BoringSSL connection pools in `tlsplus-core`. It does not use
+//! the embedded local proxy or the core's UniFFI proxy records.
 //!
 //! # Quick start
 //!

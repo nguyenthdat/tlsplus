@@ -1,20 +1,17 @@
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
-use http::{HeaderMap, HeaderName, HeaderValue, Method, header::CONTENT_TYPE};
+use bytes::Bytes;
+use http::{HeaderMap, HeaderName, HeaderValue, Method, Uri, header::CONTENT_TYPE};
+use http_body_util::Full;
+use hyper::Request;
 use serde::Serialize;
+use tlsplus_core::http_client::HttpClient as CoreHttpClient;
 use url::Url;
 
 use crate::{Error, Response, Result};
 
 const DEFAULT_PROFILE: &str = "pass-through";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
 struct ClientConfig {
@@ -190,10 +187,45 @@ pub struct RequestBuilder {
 
 #[derive(Debug)]
 struct PreparedRequest {
-    core_request: tlsplus_core::ProxyRequest,
+    request: Request<Full<Bytes>>,
     url: Url,
     profile: String,
     timeout: Duration,
+}
+
+impl PreparedRequest {
+    async fn send(self) -> Result<Response> {
+        let Self {
+            request,
+            url,
+            profile,
+            ..
+        } = self;
+
+        let client = match CoreHttpClient::for_profile(&profile) {
+            Ok(client) => client,
+            Err(error) => {
+                return Err(Error::Request {
+                    url: Box::new(url),
+                    profile,
+                    message: error.to_string(),
+                });
+            }
+        };
+
+        let response = match client.request(request).await {
+            Ok(response) => response,
+            Err(error) => {
+                return Err(Error::Request {
+                    url: Box::new(url),
+                    profile,
+                    message: error.to_string(),
+                });
+            }
+        };
+
+        Response::from_hyper(response, url, profile).await
+    }
 }
 
 impl RequestBuilder {
@@ -296,28 +328,18 @@ impl RequestBuilder {
         self
     }
 
-    /// Sends the request asynchronously through `tlsplus-core`.
+    /// Sends the request directly through `tlsplus-core`'s Hyper transport.
     pub async fn send(self) -> Result<Response> {
         let prepared = self.prepare()?;
-        let core_response = tokio::time::timeout(
-            prepared.timeout,
-            tlsplus_core::proxy_send_request_async(prepared.core_request),
-        )
-        .await
-        .map_err(|_| Error::Timeout {
-            url: Box::new(prepared.url.clone()),
-            timeout: prepared.timeout,
-        })?;
+        let timeout = prepared.timeout;
+        let url = prepared.url.clone();
 
-        if let Some(message) = core_response.error {
-            return Err(Error::Request {
-                url: Box::new(prepared.url),
-                profile: prepared.profile,
-                message,
-            });
-        }
-
-        Response::from_core(core_response, prepared.url, prepared.profile)
+        tokio::time::timeout(timeout, prepared.send())
+            .await
+            .map_err(|_| Error::Timeout {
+                url: Box::new(url),
+                timeout,
+            })?
     }
 
     fn prepare(self) -> Result<PreparedRequest> {
@@ -338,20 +360,22 @@ impl RequestBuilder {
 
         let mut headers = self.client.config.default_headers.clone();
         replace_headers(&mut headers, self.headers);
-        let headers = header_strings(&headers)?;
-        let timeout_secs = duration_to_core_seconds(timeout);
-        let request_number = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        validate_header_map(&headers)?;
+
+        let uri = url
+            .as_str()
+            .parse::<Uri>()
+            .map_err(|error| Error::InvalidUrl {
+                input: url.as_str().to_owned(),
+                reason: error.to_string(),
+            })?;
+        let mut request = Request::new(Full::new(Bytes::from(self.body)));
+        *request.method_mut() = self.method;
+        *request.uri_mut() = uri;
+        *request.headers_mut() = headers;
 
         Ok(PreparedRequest {
-            core_request: tlsplus_core::ProxyRequest {
-                id: format!("tlsplus-client-{request_number}"),
-                method: self.method.as_str().to_owned(),
-                url: url.as_str().to_owned(),
-                headers,
-                body: self.body,
-                profile: profile.clone(),
-                timeout_secs,
-            },
+            request,
             url,
             profile,
             timeout,
@@ -424,31 +448,10 @@ fn validate_header_map(headers: &HeaderMap) -> Result<()> {
     Ok(())
 }
 
-fn header_strings(headers: &HeaderMap) -> Result<Vec<String>> {
-    validate_header_map(headers)?;
-    headers
-        .iter()
-        .map(|(name, value)| {
-            value
-                .to_str()
-                .map(|value| format!("{}: {value}", name.as_str()))
-                .map_err(|error| Error::InvalidHeader {
-                    name: name.as_str().to_owned(),
-                    reason: error.to_string(),
-                })
-        })
-        .collect()
-}
-
-fn duration_to_core_seconds(timeout: Duration) -> u32 {
-    let rounded_up = timeout
-        .as_secs()
-        .saturating_add(u64::from(timeout.subsec_nanos() > 0));
-    u32::try_from(rounded_up).unwrap_or(u32::MAX)
-}
-
 #[cfg(test)]
 mod tests {
+    use http_body_util::BodyExt;
+
     use super::*;
 
     #[test]
@@ -475,8 +478,8 @@ mod tests {
         assert!(matches!(error, Error::InvalidTimeout));
     }
 
-    #[test]
-    fn request_preparation_merges_query_headers_json_and_profile() {
+    #[tokio::test]
+    async fn request_preparation_builds_hyper_request_with_merged_configuration() {
         let client = Client::builder()
             .profile("pass-through")
             .default_header("x-source", "default")
@@ -494,28 +497,25 @@ mod tests {
 
         assert_eq!(prepared.profile, "chrome_120");
         assert_eq!(prepared.timeout, Duration::from_millis(1500));
-        assert_eq!(prepared.core_request.timeout_secs, 2);
         assert!(
             prepared
-                .core_request
-                .url
+                .request
+                .uri()
+                .to_string()
                 .contains("existing=1&next=two+words")
         );
-        assert!(
-            prepared
-                .core_request
-                .headers
-                .contains(&"x-source: request".to_owned())
-        );
-        assert!(
-            prepared
-                .core_request
-                .headers
-                .contains(&"content-type: application/json".to_owned())
-        );
+        assert_eq!(prepared.request.headers()["x-source"], "request");
+        assert_eq!(prepared.request.headers()[CONTENT_TYPE], "application/json");
+
+        let body = prepared
+            .request
+            .into_body()
+            .collect()
+            .await
+            .expect("collect prepared body")
+            .to_bytes();
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&prepared.core_request.body)
-                .expect("JSON body"),
+            serde_json::from_slice::<serde_json::Value>(&body).expect("JSON body"),
             serde_json::json!({"ok": true})
         );
     }

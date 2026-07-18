@@ -36,7 +36,8 @@ Burp Suite
 Rust applications
   -> tlsplus-client
        -> Reqwest-style Client / RequestBuilder / Response API
-       -> Async direct requests through tlsplus-core
+       -> Hyper requests sent directly through tlsplus-core's shared pools
+       -> No local proxy or UniFFI proxy-record conversion
 ```
 
 Key files:
@@ -105,7 +106,8 @@ cargo test -p tlsplus-client
 ## Rust HTTP Client
 
 Use `tlsplus-client` when calling TLS+ from Rust. It hides the underlying Hyper
-request and connector types while preserving profile-aware connection pooling:
+connector types while sending requests directly through profile-aware shared
+connection pools:
 
 ```rust
 let response = tlsplus_client::get("https://example.com")
@@ -119,10 +121,11 @@ println!("{}", response.text().await?);
 ```
 
 For multiple requests, build and reuse a `tlsplus_client::Client` with a default
-profile, timeout, and headers. The lower-level `ProxyRequest` API remains
-available in `tlsplus-core` for UniFFI and Burp integration. The async client
-must run on a Tokio runtime; direct request and response bodies are currently
-buffered in memory.
+profile, timeout, and headers. The Rust client does not route through the local
+proxy or `ProxyRequest`; that lower-level record API remains available in
+`tlsplus-core` for UniFFI and Burp integration. The async client must run on a
+Tokio runtime; direct request and response bodies are currently buffered in
+memory.
 
 ## Load In Burp
 

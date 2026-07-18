@@ -1,9 +1,11 @@
 # tlsplus-client
 
-`tlsplus-client` is the ergonomic Rust HTTP API for TLS+. It wraps the
-fingerprint-aware Hyper/BoringSSL engine in `tlsplus-core` so callers do not
-need to construct Hyper connectors, bodies, or requests directly. Calls run on
-Tokio; direct request and response bodies are currently buffered in memory.
+`tlsplus-client` is the ergonomic Rust HTTP API for TLS+. Its builders create
+Hyper requests and send them directly through the fingerprint-aware
+Hyper/BoringSSL connection pools in `tlsplus-core`. It does not start or route
+through the embedded local proxy, and it does not convert requests through the
+UniFFI `ProxyRequest`/`ProxyResponse` records. Calls run on Tokio; request and
+response bodies are currently buffered in memory.
 
 ```rust
 use std::time::Duration;
