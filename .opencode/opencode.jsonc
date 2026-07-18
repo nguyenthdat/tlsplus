@@ -1,0 +1,8 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "playwright": { "enabled": true },
+    "chrome.devtools": { "enabled": true },
+    "firefox.devtools": { "enabled": true },
+  },
+}
