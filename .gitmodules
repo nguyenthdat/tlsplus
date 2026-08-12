@@ -1,0 +1,6 @@
+[submodule "crates/wreq-util"]
+	path = crates/wreq-util
+	url = git@github.com:nguyenthdat/wreq-util.git
+[submodule "crates/wreq"]
+	path = crates/wreq
+	url = git@github.com:nguyenthdat/wreq.git
