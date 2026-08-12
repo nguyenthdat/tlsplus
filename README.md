@@ -202,22 +202,28 @@ cargo test -p tlsplus-core
 gradle build
 ```
 
-Cloudflare connectivity QA is available in the Rust test suite:
+Live external fingerprint QA is available in the Rust test suite. These tests
+are ignored by default because they contact third-party services:
 
 ```bash
-cargo test -p tlsplus-core --test cloudflare_qa -- --nocapture
+cargo test -p tlsplus-core --test cloudflare_qa -- --ignored --nocapture
+cargo test -p tlsplus-core --test external_fingerprint_qa -- --ignored --nocapture
 ```
 
 Targeted `chrome_149` human-score QA:
 
 ```bash
-cargo test -p tlsplus-core --test cloudflare_qa chrome_149_human_score -- --nocapture
+cargo test -p tlsplus-core --test cloudflare_qa chrome_149_human_score -- --ignored --nocapture
 ```
 
-These tests contact external services and may fail because of network conditions or target-side bot-detection changes.
+The external fingerprint suite sends the `chrome_149` profile to:
 
-- https://www.browserscan.net/
-- https://browserleaks.com/
+- BrowserScan TLS diagnostics: https://www.browserscan.net/tls
+- BrowserLeaks TLS Client Test: https://browserleaks.com/tls
+
+Browser-rendered scores and privacy checks still require a real browser because
+the home pages execute JavaScript and call additional diagnostic endpoints.
+All live tests may fail because of network conditions or target-side changes.
 
 ## Known Limits
 
