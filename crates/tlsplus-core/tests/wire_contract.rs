@@ -67,6 +67,34 @@ fn stop_idempotent() {
     assert!(!second.running);
 }
 
+#[test]
+fn occupied_port_does_not_report_running() {
+    let _guard = lock();
+    let _ = stop_local_server();
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve occupied port");
+    let address = occupied.local_addr().expect("read occupied address");
+
+    let started = start_local_server(address.to_string());
+
+    assert!(!started.running);
+    assert!(started.message.contains("failed to bind"));
+    assert!(!server_status().running);
+}
+
+#[test]
+fn stopped_server_can_restart_immediately() {
+    let _guard = lock();
+    let _ = stop_local_server();
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve restart port");
+    let address = reserved.local_addr().expect("read restart address");
+    drop(reserved);
+
+    assert!(start_local_server(address.to_string()).running);
+    assert!(!stop_local_server().running);
+    assert!(start_local_server(address.to_string()).running);
+    assert!(!stop_local_server().running);
+}
+
 // ── X-Tlsplus-* header naming contract ─────────────────────────────────
 
 #[test]

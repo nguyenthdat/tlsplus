@@ -20,14 +20,19 @@ uniffi::setup_scaffolding!();
 pub(crate) struct ServerState {
     pub running: bool,
     pub listen_addr: Option<String>,
-    pub shutdown_notify: Option<std::sync::Arc<tokio::sync::Notify>>,
+    pub shutdown: Option<ServerShutdown>,
+}
+
+pub(crate) struct ServerShutdown {
+    pub sender: tokio::sync::oneshot::Sender<()>,
+    pub completion: std::sync::mpsc::Receiver<()>,
 }
 
 pub(crate) static SERVER_STATE: LazyLock<Mutex<ServerState>> = LazyLock::new(|| {
     Mutex::new(ServerState {
         running: false,
         listen_addr: None,
-        shutdown_notify: None,
+        shutdown: None,
     })
 });
 

@@ -46,7 +46,7 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
             msvc_arch: x64
           - classifier: windows-aarch64
-            # Cross-compile from x64 Windows: boring-sys 5.1.0 only disables
+            # Cross-compile from x64 Windows: btls-sys only disables
             # BoringSSL MSVC assembly on Windows when HOST != TARGET. Native
             # windows-11-arm hits an upstream BoringSSL ASM object-selection bug.
             runs_on: windows-2022
@@ -62,6 +62,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install Linux native build tools
         if: runner.os == 'Linux'
@@ -121,7 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked \
-            --manifest-path crate/tlsplus-core/Cargo.toml \
+            --manifest-path crates/tlsplus-core/Cargo.toml \
             --target "${{ matrix.rust_target }}" \
             --lib \
             --bins
@@ -131,7 +133,7 @@ jobs:
         shell: pwsh
         run: |
           cargo test --locked `
-            --manifest-path crate/tlsplus-core/Cargo.toml `
+            --manifest-path crates/tlsplus-core/Cargo.toml `
             --target "${{ matrix.rust_target }}" `
             --lib `
             --bins
@@ -141,7 +143,7 @@ jobs:
         shell: pwsh
         run: |
           cargo test --locked `
-            --manifest-path crate/tlsplus-core/Cargo.toml `
+            --manifest-path crates/tlsplus-core/Cargo.toml `
             --target "${{ matrix.rust_target }}" `
             --lib `
             --bins `
@@ -182,7 +184,7 @@ jobs:
             lib_name: tlsplus_core.dll
             msvc_arch: x64
           - classifier: windows-aarch64
-            # Cross-compile from x64 Windows for the same boring-sys/BoringSSL
+            # Cross-compile from x64 Windows for the same btls-sys/BoringSSL
             # ASM reason documented in the test matrix above.
             runs_on: windows-2022
             rust_target: aarch64-pc-windows-msvc
@@ -200,6 +202,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install Linux native build tools
         if: runner.os == 'Linux'
@@ -259,7 +263,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release \
-            --manifest-path crate/tlsplus-core/Cargo.toml \
+            --manifest-path crates/tlsplus-core/Cargo.toml \
             --target "${{ matrix.rust_target }}"
 
       - name: Build native library (Windows)
@@ -267,7 +271,7 @@ jobs:
         shell: pwsh
         run: |
           cargo build --release `
-            --manifest-path crate/tlsplus-core/Cargo.toml `
+            --manifest-path crates/tlsplus-core/Cargo.toml `
             --target "${{ matrix.rust_target }}"
 
       - name: Stage native artifact (Unix)
@@ -307,6 +311,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Install native build tools
         run: |
