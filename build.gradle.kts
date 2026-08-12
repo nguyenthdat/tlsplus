@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.tlsplus"
-version = "0.1.0"
+version = "0.3.0"
 
 val rustCrateDir = layout.projectDirectory.dir("crates/tlsplus-core")
 val rustManifest = rustCrateDir.file("Cargo.toml")
@@ -77,14 +77,22 @@ val cargoBuildRelease =
         group = "rust"
         workingDir = rustCrateDir.asFile
         inputs.files(
+            layout.projectDirectory.file("Cargo.lock"),
             fileTree(rustCrateDir) {
-                include("Cargo.toml", "Cargo.lock", "uniffi.toml", "uniffi-bindgen.rs", "src/**/*.rs")
+                include("Cargo.toml", "build.rs", "uniffi.toml", "uniffi-bindgen.rs", "src/**")
+            },
+            fileTree(layout.projectDirectory.dir("crates/wreq")) {
+                exclude(".git", "target/**")
+            },
+            fileTree(layout.projectDirectory.dir("crates/wreq-util")) {
+                exclude(".git", "target/**")
             },
         )
         outputs.file(nativeLibraryPath)
         commandLine(
             "cargo",
             "build",
+            "--locked",
             "--release",
             "--manifest-path",
             rustManifest.asFile.absolutePath,
@@ -105,6 +113,7 @@ val generateUniFfiBindings =
         commandLine(
             "cargo",
             "run",
+            "--locked",
             "--manifest-path",
             rustManifest.asFile.absolutePath,
             "--bin",
@@ -188,6 +197,12 @@ val burpJar =
         dependsOn(tasks.classes)
         archiveFileName.set("tlsplus-extension.jar")
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        manifest {
+            attributes(
+                "Implementation-Title" to "TLS+",
+                "Implementation-Version" to project.version,
+            )
+        }
 
         from(sourceSets.main.get().output)
         from({
