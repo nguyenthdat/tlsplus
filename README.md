@@ -4,6 +4,8 @@ TLS+ is a Burp Suite Montoya extension that routes Burp traffic through a native
 
 It is built as a Kotlin/JVM Burp extension with a Rust `cdylib` packaged inside the Burp-loadable jar through UniFFI and JNA.
 
+Current release: `0.3.0`. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 ## Current Capabilities
 
 - Burp Montoya extension shell written in Kotlin.
