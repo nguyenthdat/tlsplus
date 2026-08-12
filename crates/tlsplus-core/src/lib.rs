@@ -1,17 +1,15 @@
 //! Rust core for the TLS+ Burp extension.
 //!
 //! Powered by `huginn-net-tls` for JA4 TLS fingerprinting and an embedded
-//! HTTP forward proxy (tokio + hyper + BoringSSL) with streaming request and
-//! response bodies and header case preservation for Chrome-accurate
-//! fingerprint-aware outbound connections.
+//! Hyper ingress proxy with wreq/wreq-util outbound connections.
 
 use std::sync::{LazyLock, Mutex};
 
-pub mod ja4;
 pub mod http_client;
+pub mod ja4;
 pub mod profiles;
 pub mod proxy;
-pub mod tls;
+mod transport;
 
 uniffi::setup_scaffolding!();
 
@@ -157,13 +155,15 @@ pub fn engine_info() -> EngineInfo {
                 .to_owned(),
             "Compute JA3 legacy fingerprint with MD5 hash".to_owned(),
             "Parse SNI, ALPN, and TLS version from ClientHello".to_owned(),
-            "Run an embedded HTTP forward proxy (hyper-native + BoringSSL)".to_owned(),
+            "Run an embedded HTTP forward proxy with Hyper ingress and wreq outbound transport"
+                .to_owned(),
             "Synchronous proxy_send_request for Burp handler integration".to_owned(),
             "Expose a UniFFI/JNA-safe API to Kotlin".to_owned(),
-            "15 browser TLS fingerprint profiles (Chrome, Firefox, Safari, etc.)".to_owned(),
-            "Per-profile TLS configuration via BoringSSL with GREASE support".to_owned(),
-            "Extension permutation for Chrome-like ClientHello".to_owned(),
-            "Full cipher suite coverage including CBC ciphers".to_owned(),
+            format!(
+                "{} TLS/HTTP emulation profiles from wreq-util plus compatibility aliases",
+                wreq_util::Profile::VARIANTS.len()
+            ),
+            "Per-profile TLS, HTTP/2, and header emulation via wreq-util".to_owned(),
             "Request-level timeouts, retry with exponential backoff".to_owned(),
             "HTTP/2 support with connection pooling".to_owned(),
         ],
@@ -197,10 +197,10 @@ pub fn available_profiles() -> Vec<String> {
 #[uniffi::export]
 pub fn get_tls_profile(name: String) -> Option<TlsProfileInfo> {
     profiles::by_name(&name).map(|p| TlsProfileInfo {
-        name: p.name.clone(),
-        description: p.description.clone(),
-        cipher_count: p.cipher_suites.len() as u32,
-        alpn_protocols: p.alpn_protocols.clone(),
+        name: p.name.to_owned(),
+        description: p.description.to_owned(),
+        cipher_count: p.cipher_count(),
+        alpn_protocols: p.alpn_protocols(),
     })
 }
 
@@ -224,7 +224,7 @@ pub fn ja4_calculate_client_hello(packet: Vec<u8>) -> Ja4Result {
 /// Start the embedded HTTP forward proxy on `listen_addr` (e.g. "127.0.0.1:8443").
 ///
 /// The proxy accepts any HTTP request, reads forwarding instructions from
-/// `X-Tlsplus-*` headers, and forwards to the real destination via hyper + BoringSSL.
+/// `X-Tlsplus-*` headers, and forwards to the real destination via wreq.
 #[uniffi::export]
 pub fn start_local_server(listen_addr: String) -> ServerStatus {
     proxy::start_local_server_impl(listen_addr)
@@ -257,13 +257,11 @@ pub fn proxy_send_request(request: ProxyRequest) -> ProxyResponse {
     proxy::proxy_send_request_impl(request)
 }
 
-/// Asynchronously forward one [`ProxyRequest`] through the internal Hyper and
-/// BoringSSL client without starting the local proxy server.
+/// Asynchronously forward one [`ProxyRequest`] through the internal wreq client
+/// without starting the local proxy server.
 ///
-/// Rust applications should normally use the ergonomic `tlsplus-client` crate.
-/// This lower-level function exists so that client can reuse the TLS engine
-/// without blocking a Tokio worker thread. The UniFFI boundary continues to use
-/// [`proxy_send_request`].
+/// Rust applications can use this function without blocking a Tokio worker
+/// thread. The UniFFI boundary continues to use [`proxy_send_request`].
 pub async fn proxy_send_request_async(request: ProxyRequest) -> ProxyResponse {
     proxy::proxy_send_request_async_impl(request).await
 }

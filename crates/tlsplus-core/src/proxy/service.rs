@@ -1,15 +1,15 @@
 use std::convert::Infallible;
-use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, StatusCode, Uri, body::Incoming};
 
-use super::client::{get_client, get_passthrough_client_cached};
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+type ServerBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
-pub(crate) fn boxed_error(msg: &str) -> http_body_util::combinators::BoxBody<Bytes, hyper::Error> {
-    Full::new(Bytes::from(msg.to_owned()))
-        .map_err(|never: Infallible| match never {})
+pub(crate) fn boxed_error(message: &str) -> ServerBody {
+    Full::new(Bytes::copy_from_slice(message.as_bytes()))
+        .map_err(|never: Infallible| -> BoxError { match never {} })
         .boxed()
 }
 
@@ -29,132 +29,94 @@ pub(crate) fn is_hop_by_hop(name: &str) -> bool {
 }
 
 pub(crate) async fn proxy_service(
-    req: Request<Incoming>,
-) -> Result<Response<http_body_util::combinators::BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    let (parts, body) = req.into_parts();
-    let req_method = parts.method;
-    let req_headers = parts.headers;
-
-    let target = req_headers
+    request: Request<Incoming>,
+) -> Result<Response<ServerBody>, Infallible> {
+    let (parts, body) = request.into_parts();
+    let target = parts
+        .headers
         .get("x-tlsplus-target")
-        .or_else(|| req_headers.get("X-Tlsplus-Target"))
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
 
     if target.is_empty() {
-        let mut resp = Response::new(boxed_error("Missing X-Tlsplus-Target header"));
-        *resp.status_mut() = StatusCode::BAD_REQUEST;
-        return Ok(resp);
+        return Ok(error_response(
+            StatusCode::BAD_REQUEST,
+            "Missing X-Tlsplus-Target header",
+        ));
     }
 
-    let profile = req_headers
+    let profile = parts
+        .headers
         .get("x-tlsplus-profile")
-        .or_else(|| req_headers.get("X-Tlsplus-Profile"))
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("pass-through");
-
-    let timeout_str = req_headers
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("pass-through")
+        .to_owned();
+    let timeout_secs = parts
+        .headers
         .get("x-tlsplus-timeout")
-        .or_else(|| req_headers.get("X-Tlsplus-Timeout"))
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("30");
-    let timeout_secs: u64 = timeout_str.parse().unwrap_or(30);
-
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(30);
     let uri: Uri = match target.parse() {
         Ok(uri) => uri,
-        Err(e) => {
-            let mut resp = Response::new(boxed_error(&format!("Invalid target URL: {e}")));
-            *resp.status_mut() = StatusCode::BAD_REQUEST;
-            return Ok(resp);
+        Err(error) => {
+            return Ok(error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Invalid target URL: {error}"),
+            ));
         }
     };
-
-    let client = if profile == "pass-through" {
-        match get_passthrough_client_cached() {
-            Ok(c) => c,
-            Err(e) => {
-                let mut resp = Response::new(boxed_error(&e));
-                *resp.status_mut() = StatusCode::BAD_GATEWAY;
-                return Ok(resp);
-            }
-        }
-    } else {
-        match get_client(profile) {
-            Ok(c) => c,
-            Err(e) => {
-                let mut resp = Response::new(boxed_error(&e));
-                *resp.status_mut() = StatusCode::BAD_GATEWAY;
-                return Ok(resp);
-            }
-        }
+    let client = match crate::transport::get_wreq_client(&profile) {
+        Ok(client) => client,
+        Err(error) => return Ok(error_response(StatusCode::BAD_GATEWAY, &error)),
     };
 
-    let body_bytes = match body.collect().await {
-        Ok(collected) => collected.to_bytes(),
+    let headers = parts
+        .headers
+        .iter()
+        .filter(|(name, _)| {
+            let name = name.as_str();
+            !name.starts_with("x-tlsplus-") && name != "host" && !is_hop_by_hop(name)
+        })
+        .fold(hyper::HeaderMap::new(), |mut headers, (name, value)| {
+            headers.append(name.clone(), value.clone());
+            headers
+        });
+
+    let outbound = client
+        .request(parts.method, uri)
+        .headers(headers)
+        .body(wreq::Body::wrap_stream(body.into_data_stream()))
+        .send();
+    let effective_timeout = std::time::Duration::from_secs(timeout_secs.max(1));
+    let response = match tokio::time::timeout(effective_timeout, outbound).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            return Ok(error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("Request to {target} failed (profile: {profile}): {error}"),
+            ));
+        }
         Err(_) => {
-            let mut resp = Response::new(boxed_error("Failed to read request body"));
-            *resp.status_mut() = StatusCode::BAD_GATEWAY;
-            return Ok(resp);
+            return Ok(error_response(
+                StatusCode::GATEWAY_TIMEOUT,
+                &format!("Request to {target} timed out after {effective_timeout:?}"),
+            ));
         }
     };
 
-    let effective_timeout = Duration::from_secs(timeout_secs.max(1));
+    let mut response: hyper::Response<wreq::Body> = response.into();
+    response.headers_mut().remove("transfer-encoding");
+    let (parts, body) = response.into_parts();
+    let body = body
+        .map_err(|error| -> BoxError { Box::new(error) })
+        .boxed();
+    Ok(Response::from_parts(parts, body))
+}
 
-    let mut wreq_req = client.request(req_method, uri.to_string());
-
-    for (name, value) in req_headers.iter() {
-        let lower = name.as_str();
-        if lower.starts_with("x-tlsplus-") || lower == "host" || is_hop_by_hop(lower) {
-            continue;
-        }
-        wreq_req = wreq_req.header(name.as_str(), value.to_str().unwrap_or(""));
-    }
-
-    wreq_req = wreq_req.body(body_bytes.to_vec());
-    wreq_req = wreq_req.timeout(effective_timeout);
-
-    match wreq_req.send().await {
-        Ok(resp) => {
-            let status = resp.status();
-            let response_headers = resp.headers().clone();
-            let resp_bytes = match resp.bytes().await {
-                Ok(b) => b,
-                Err(_) => {
-                    let mut err = Response::new(boxed_error("Failed to read response body"));
-                    *err.status_mut() = StatusCode::BAD_GATEWAY;
-                    return Ok(err);
-                }
-            };
-
-            let mut resp_builder = Response::builder().status(status);
-            if let Some(hdrs) = resp_builder.headers_mut() {
-                for (name, value) in response_headers.iter() {
-                    let lower = name.as_str();
-                    if lower == "transfer-encoding" {
-                        continue;
-                    }
-                    hdrs.append(name.clone(), value.clone());
-                }
-            }
-
-            Ok(resp_builder
-                .body(
-                    Full::new(resp_bytes)
-                        .map_err(|never: Infallible| match never {})
-                        .boxed(),
-                )
-                .unwrap_or_else(|_| {
-                    let mut err = Response::new(boxed_error("Failed to build response"));
-                    *err.status_mut() = StatusCode::BAD_GATEWAY;
-                    err
-                }))
-        }
-        Err(e) => {
-            let mut resp = Response::new(boxed_error(&format!(
-                "Request to {target} failed (profile: {profile}): {e}"
-            )));
-            *resp.status_mut() = StatusCode::BAD_GATEWAY;
-            Ok(resp)
-        }
-    }
+fn error_response(status: StatusCode, message: &str) -> Response<ServerBody> {
+    let mut response = Response::new(boxed_error(message));
+    *response.status_mut() = status;
+    response
 }

@@ -1,17 +1,17 @@
-//! Direct Hyper/BoringSSL transport for Rust clients.
+//! Direct profile-aware wreq transport for Rust clients.
 //!
-//! This is a thin Rust-only wrapper over the existing profile-aware Hyper pool.
+//! This is a thin Rust-only wrapper over the shared profile-aware wreq pool.
 //! It bypasses the proxy server, forwarding layer, and UniFFI request records
 //! without changing their implementation or Kotlin-facing API.
 
-use std::{convert::Infallible, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use hyper::{Request, Response, body::Incoming};
 use thiserror::Error;
+use wreq::{Request, Response};
 
-use crate::proxy::client::{ProfileClient, ProxyBody, get_client, get_passthrough_client};
+use crate::transport::{WreqClient, get_passthrough_client, get_wreq_client};
 
 const PASS_THROUGH_PROFILE: &str = "pass-through";
 
@@ -26,7 +26,7 @@ pub enum HttpClientError {
         profile: String,
     },
 
-    /// The profile-specific Hyper/BoringSSL client could not be initialized.
+    /// The profile-specific wreq client could not be initialized.
     #[error("failed to initialize HTTP client for TLS profile '{profile}': {message}")]
     Initialization {
         /// Canonical TLS profile name.
@@ -35,37 +35,37 @@ pub enum HttpClientError {
         message: String,
     },
 
-    /// Hyper could not complete a direct request.
+    /// wreq could not complete a direct request.
     #[error("HTTP request using TLS profile '{profile}' failed: {source}")]
     Request {
         /// Canonical TLS profile name.
         profile: String,
-        /// Hyper client error.
+        /// wreq client error.
         #[source]
-        source: hyper_util::client::legacy::Error,
+        source: wreq::Error,
     },
 }
 
-/// Reusable direct Hyper client for one TLS fingerprint profile.
+/// Reusable direct wreq client for one TLS fingerprint profile.
 ///
 /// Cloning this handle is cheap and preserves the underlying connection pool.
 #[derive(Clone)]
 pub struct HttpClient {
     profile: Arc<str>,
-    inner: Arc<ProfileClient>,
+    inner: Arc<WreqClient>,
 }
 
 impl HttpClient {
-    /// Retrieves the shared Hyper client for a built-in TLS profile.
+    /// Retrieves the shared wreq client for a built-in TLS profile.
     ///
     /// Profile matching is case-insensitive. The special `pass-through`
-    /// profile uses Hyper/BoringSSL defaults without fingerprint overrides.
+    /// profile uses wreq defaults without fingerprint overrides.
     pub fn for_profile(profile: &str) -> Result<Self, HttpClientError> {
         let canonical = canonical_profile(profile)?;
         let inner = if canonical == PASS_THROUGH_PROFILE {
             get_passthrough_client()
         } else {
-            get_client(canonical)
+            get_wreq_client(canonical)
         }
         .map_err(|message| HttpClientError::Initialization {
             profile: canonical.to_owned(),
@@ -84,17 +84,23 @@ impl HttpClient {
         &self.profile
     }
 
-    /// Sends a buffered Hyper request directly through this profile's pool.
+    /// Sends a buffered request directly through this profile's pool.
     ///
-    /// The returned [`Incoming`] body remains streaming; higher-level clients
+    /// The returned wreq response body remains streaming; higher-level clients
     /// may choose whether to stream or buffer it.
     pub async fn request(
         &self,
-        request: Request<Full<Bytes>>,
-    ) -> Result<Response<Incoming>, HttpClientError> {
-        let request = request.map(boxed_full_body);
+        request: hyper::Request<Full<Bytes>>,
+    ) -> Result<Response, HttpClientError> {
+        let (parts, body) = request.into_parts();
+        let body = match body.collect().await {
+            Ok(body) => body.to_bytes(),
+            Err(never) => match never {},
+        };
+        let request = hyper::Request::from_parts(parts, body);
+        let request: Request = request.into();
         self.inner
-            .request(request)
+            .execute(request)
             .await
             .map_err(|source| HttpClientError::Request {
                 profile: self.profile.to_string(),
@@ -123,10 +129,6 @@ fn canonical_profile(profile: &str) -> Result<&'static str, HttpClientError> {
         .ok_or_else(|| HttpClientError::UnknownProfile {
             profile: profile.to_owned(),
         })
-}
-
-fn boxed_full_body(body: Full<Bytes>) -> ProxyBody {
-    body.map_err(|never: Infallible| match never {}).boxed()
 }
 
 #[cfg(test)]

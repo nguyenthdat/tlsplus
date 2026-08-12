@@ -2,12 +2,19 @@
 //!
 //! Characterizes retries/backoff, timeout-zero behavior, ID/status-0 errors,
 //! unknown-profile errors, proxy fallback, canonical pool identity, and
-//! non-replayable streams. All assertions must remain green across the old
-//! BoringSSL transport and the new wreq/btls transport after T14.
+//! non-replayable streams for the wreq/btls transport.
 
-use tlsplus_core::{http_client::HttpClient, proxy_send_request, ProxyRequest};
+use std::convert::Infallible;
 
-mod support;
+use bytes::Bytes;
+use http_body_util::Full;
+use hyper::{Request, Response, service::service_fn};
+use hyper_util::rt::TokioIo;
+use tlsplus_core::{
+    ProxyRequest, http_client::HttpClient, proxy_send_request, start_local_server,
+    stop_local_server,
+};
+use tokio::net::TcpListener;
 
 // ── ID preservation ──────────────────────────────────────────────────────
 
@@ -150,4 +157,160 @@ fn proxy_request_body_is_valued_not_replayable_stream() {
         timeout_secs: 2,
     };
     assert_eq!(req.body.len(), 3);
+}
+
+#[tokio::test]
+async fn direct_wreq_client_round_trips_a_buffered_request() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind local test server");
+    let address = listener.local_addr().expect("read local address");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept test request");
+        hyper::server::conn::http1::Builder::new()
+            .serve_connection(
+                TokioIo::new(stream),
+                service_fn(|request: Request<hyper::body::Incoming>| async move {
+                    let value = request
+                        .headers()
+                        .get("x-tlsplus-test")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default();
+                    Ok::<_, Infallible>(Response::new(Full::new(Bytes::copy_from_slice(
+                        value.as_bytes(),
+                    ))))
+                }),
+            )
+            .await
+            .expect("serve test request");
+    });
+
+    let request = Request::builder()
+        .uri(format!("http://{address}/round-trip"))
+        .header("x-tlsplus-test", "wreq-fork")
+        .body(Full::new(Bytes::new()))
+        .expect("build request");
+    let response = HttpClient::for_profile("pass-through")
+        .expect("build direct client")
+        .request(request)
+        .await
+        .expect("send direct request");
+    let body = response.bytes().await.expect("read response body");
+    assert_eq!(body, Bytes::from_static(b"wreq-fork"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn local_proxy_forwards_headers_and_body_through_wreq() {
+    let upstream = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream server");
+    let upstream_address = upstream.local_addr().expect("read upstream address");
+    let upstream_task = tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.expect("accept proxy request");
+        hyper::server::conn::http1::Builder::new()
+            .serve_connection(
+                TokioIo::new(stream),
+                service_fn(|request: Request<hyper::body::Incoming>| async move {
+                    let echoed = request
+                        .headers()
+                        .get("x-round-trip")
+                        .cloned()
+                        .unwrap_or_else(|| hyper::header::HeaderValue::from_static("missing"));
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .header("x-upstream", echoed)
+                            .body(Full::new(Bytes::from_static(b"proxy-wreq")))
+                            .expect("build upstream response"),
+                    )
+                }),
+            )
+            .await
+            .expect("serve proxy request");
+    });
+
+    let proxy_address = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("reserve proxy address")
+        .local_addr()
+        .expect("read proxy address");
+    let started = start_local_server(proxy_address.to_string());
+    assert!(started.running, "proxy must start: {}", started.message);
+
+    let request = wreq::Client::new()
+        .get(format!("http://{proxy_address}/"))
+        .header(
+            "x-tlsplus-target",
+            format!("http://{upstream_address}/echo"),
+        )
+        .header("x-tlsplus-profile", "pass-through")
+        .header("x-round-trip", "preserved");
+    let mut response = None;
+    for _ in 0..20 {
+        match request
+            .try_clone()
+            .expect("clone proxy request")
+            .send()
+            .await
+        {
+            Ok(value) => {
+                response = Some(value);
+                break;
+            }
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+        }
+    }
+    let response = response.expect("send through public local proxy");
+    assert_eq!(response.status(), hyper::StatusCode::OK);
+    assert_eq!(response.headers()["x-upstream"], "preserved");
+    assert_eq!(
+        response.bytes().await.expect("read proxy body"),
+        Bytes::from_static(b"proxy-wreq")
+    );
+    stop_local_server();
+    upstream_task.abort();
+}
+
+#[tokio::test]
+async fn buffered_proxy_preserves_redirect_responses() {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind redirect server");
+    let address = listener.local_addr().expect("read redirect address");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept redirect request");
+        hyper::server::conn::http1::Builder::new()
+            .serve_connection(
+                TokioIo::new(stream),
+                service_fn(|_: Request<hyper::body::Incoming>| async move {
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .status(hyper::StatusCode::FOUND)
+                            .header("location", "/next")
+                            .body(Full::new(Bytes::new()))
+                            .expect("build redirect response"),
+                    )
+                }),
+            )
+            .await
+            .expect("serve redirect request");
+    });
+
+    let response = tlsplus_core::proxy_send_request_async(ProxyRequest {
+        id: "redirect".to_owned(),
+        method: "GET".to_owned(),
+        url: format!("http://{address}/start"),
+        headers: vec![],
+        body: vec![],
+        profile: "pass-through".to_owned(),
+        timeout_secs: 2,
+    })
+    .await;
+    assert_eq!(response.status_code, 302);
+    assert!(
+        response
+            .headers
+            .iter()
+            .any(|header| header.eq_ignore_ascii_case("location: /next"))
+    );
+    server.abort();
 }

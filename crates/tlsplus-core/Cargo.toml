@@ -16,26 +16,15 @@ path = "uniffi-bindgen.rs"
 uniffi = { version = "0.31.2", features = ["cli"] }
 huginn-net-tls = { version = "2.0.0-rc", features = ["full", "json"] }
 tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 thiserror = "2"
+wreq = { path = "../wreq", default-features = false, features = ["tokio-rt", "stream", "webpki-roots"] }
+wreq-util = { path = "../wreq-util", default-features = false, features = ["emulation"] }
 
-# TLS fingerprint spoofing — BoringSSL via Cloudflare boring
-boring = { version = "5.1", features = [] }
-tokio-boring = "5.0"
-hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
-hyper-boring = "5.0"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
 
-# Root certificates
-webpki-roots = "1"
-
-# Certificate compression — Brotli for Chrome-like ClientHello
-brotli = "8"
-
-# Legacy JA4/JA3 computation
 hex = "0.4"
 md5 = "0.8"
 [dev-dependencies]

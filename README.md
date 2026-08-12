@@ -8,8 +8,8 @@ It is built as a Kotlin/JVM Burp extension with a Rust `cdylib` packaged inside 
 
 - Burp Montoya extension shell written in Kotlin.
 - Native Rust core exposed to Kotlin through UniFFI-generated bindings.
-- Ergonomic `tlsplus-client` Rust API with reqwest-style client and request builders.
-- Embedded local HTTP forward proxy built with Tokio, Hyper, and BoringSSL.
+- Direct Rust HTTP API backed by the shared profile-aware wreq client pool.
+- Embedded local HTTP forward proxy with Hyper ingress and wreq outbound transport.
 - Automatic proxy startup on extension load, defaulting to `127.0.0.1:43117`.
 - Burp HTTP handler that redirects outgoing Burp traffic through the local TLS+ proxy when active mode is enabled.
 - Burp Proxy handler that observes request header order for fingerprint diagnostics.
@@ -17,7 +17,7 @@ It is built as a Kotlin/JVM Burp extension with a Rust `cdylib` packaged inside 
 - Native Burp Settings panel backed by Montoya `Preferences` for shared persistent settings.
 - Raw ClientHello JA4 variants: `JA4`, `JA4_r`, `JA4_o`, `JA4_or`, `JA4_s1`, and `JA4_s1r`.
 - Legacy JA3 calculation with MD5 hash.
-- Browser/tool TLS profile presets backed by BoringSSL configuration.
+- Browser TLS/HTTP profile presets backed by the in-repository wreq-util fork.
 
 ## Architecture
 
@@ -30,14 +30,13 @@ Burp Suite
   -> Rust tlsplus-core
        -> JA3/JA4 ClientHello parsing and fingerprint calculation
        -> Embedded Hyper forward proxy
-       -> Per-profile BoringSSL clients and connection pooling
+       -> Per-profile wreq clients and connection pooling
        -> Streaming request/response forwarding
 
 Rust applications
-  -> tlsplus-client
-       -> Reqwest-style Client / RequestBuilder / Response API
-       -> Hyper requests sent directly through tlsplus-core's shared pools
-       -> No local proxy or UniFFI proxy-record conversion
+  -> tlsplus-core::http_client::HttpClient
+       -> Buffered Hyper request input and streaming wreq response
+       -> Direct use of the shared profile pool without the local proxy
 ```
 
 Key files:
@@ -46,11 +45,11 @@ Key files:
 - `src/main/kotlin/com/tlsplus/burp/settings/ExtensionSettings.kt` stores persistent extension settings in Burp preferences.
 - `src/main/kotlin/com/tlsplus/burp/ui/TlsPlusTab.kt` implements the main Burp UI.
 - `src/main/kotlin/com/tlsplus/burp/ui/TlsPlusSettingsPanel.kt` implements the native Burp Settings panel.
-- `crate/tlsplus-core/src/lib.rs` exposes the UniFFI API.
-- `crate/tlsplus-core/src/proxy/` contains the embedded forwarding proxy.
-- `crate/tlsplus-core/src/profiles.rs` defines built-in TLS fingerprint profiles.
-- `crate/tlsplus-core/src/ja4.rs` computes JA3/JA4 fingerprints from raw ClientHello bytes.
-- `crate/tlsplus-client/` provides the ergonomic Rust HTTP client API.
+- `crates/tlsplus-core/src/lib.rs` exposes the UniFFI API.
+- `crates/tlsplus-core/src/proxy/` contains the embedded forwarding proxy.
+- `crates/tlsplus-core/src/profiles.rs` maps stable TLS+ labels to wreq-util emulation profiles.
+- `crates/tlsplus-core/src/ja4.rs` computes JA3/JA4 fingerprints from raw ClientHello bytes.
+- `crates/wreq/` and `crates/wreq-util/` are the editable in-repository transport forks.
 
 ## Requirements
 
@@ -88,7 +87,7 @@ gradle burpJar -Ptlsplus.nativeBundleDir=build/prebuilt-native
 
 The Gradle build performs these steps:
 
-1. Builds `crate/tlsplus-core` as a release Rust `cdylib`.
+1. Builds `crates/tlsplus-core` as a release Rust `cdylib`.
 2. Generates Kotlin bindings with UniFFI.
 3. Compiles the Kotlin Montoya extension.
 4. Copies the current-platform native library into `native/<os>-<arch>/` resources.
@@ -100,32 +99,27 @@ Useful Rust-only commands:
 cargo check -p tlsplus-core
 cargo test -p tlsplus-core
 cargo clippy -p tlsplus-core
-cargo test -p tlsplus-client
+cargo test -p wreq-util
 ```
 
 ## Rust HTTP Client
 
-Use `tlsplus-client` when calling TLS+ from Rust. It hides the underlying Hyper
-connector types while sending requests directly through profile-aware shared
-connection pools:
+Use `tlsplus_core::http_client::HttpClient` to send Rust requests directly
+through a profile-aware shared connection pool:
 
 ```rust
-let response = tlsplus_client::get("https://example.com")
-    .profile("chrome_149")
+let client = tlsplus_core::http_client::HttpClient::for_profile("chrome_149")?;
+let request = hyper::Request::builder()
+    .uri("https://example.com")
     .header("accept", "text/html")
-    .send()
-    .await?
-    .error_for_status()?;
+    .body(http_body_util::Full::new(bytes::Bytes::new()))?;
+let response = client.request(request).await?.error_for_status()?;
 
 println!("{}", response.text().await?);
 ```
 
-For multiple requests, build and reuse a `tlsplus_client::Client` with a default
-profile, timeout, and headers. The Rust client does not route through the local
-proxy or `ProxyRequest`; that lower-level record API remains available in
-`tlsplus-core` for UniFFI and Burp integration. The async client must run on a
-Tokio runtime; direct request and response bodies are currently buffered in
-memory.
+Reuse an `HttpClient` for multiple requests. Clones share the same wreq
+connection pool. The async client must run on a Tokio runtime.
 
 ## Load In Burp
 
@@ -151,7 +145,8 @@ Default active profile: `chrome_149`.
 
 ## Profiles
 
-The core exposes base labels plus browser/tool TLS profiles.
+The core exposes base labels, every profile declared by the in-repository
+`wreq-util` fork, and a small compatibility alias set.
 
 Base entries:
 
@@ -163,25 +158,16 @@ Base entries:
 
 Use `pass-through` or one of the built-in TLS profiles below for traffic forwarding. The `ja4*` labels are exposed for compatibility with the JA4 helper surface and are not browser spoofing profiles.
 
-Built-in TLS profiles:
+`wreq_util::Profile::VARIANTS` is the source of truth, so new fork profiles
+automatically appear in `available_profiles()` without another core change.
+Compatibility aliases include `chrome_149_stable`, `firefox_current`,
+`firefox_130`, `safari_17`, `edge_120`, `ios_safari_17`, `android_chrome`,
+`python_urllib3`, `rustls_default`, and `curl_8`.
 
-- `chrome_149`
-- `chrome_149_stable`
-- `firefox_current`
-- `chrome_120`
-- `chrome_130`
-- `firefox_130`
-- `firefox_135`
-- `safari_17`
-- `safari_18`
-- `edge_120`
-- `ios_safari_17`
-- `android_chrome`
-- `python_urllib3`
-- `rustls_default`
-- `curl_8`
-
-Profiles tune TLS versions, cipher ordering, signature algorithms, supported groups, ALPN ordering, key share groups, certificate compression, GREASE behavior, and extension permutation where supported by the underlying stack.
+Rust callers can build emulation settings directly with
+`wreq_util::profile!(Chrome149)` or
+`wreq_util::profile!(Chrome149, Android)`. Profile names round-trip through
+`Profile::name()` and case-insensitive `Profile::from_name()`.
 
 ## How Traffic Flows
 
@@ -230,9 +216,12 @@ cargo test -p tlsplus-core --test cloudflare_qa chrome_149_human_score -- --noca
 
 These tests contact external services and may fail because of network conditions or target-side bot-detection changes.
 
+- https://www.browserscan.net/
+- https://browserleaks.com/
+
 ## Known Limits
 
-- TLS profile matching is best-effort and constrained by BoringSSL, Hyper, and the APIs exposed by Burp Montoya.
+- TLS profile matching is best-effort and constrained by the available wreq-util profiles and Burp Montoya APIs.
 - Burp HTTP handlers do not expose raw browser ClientHello bytes, so JA3/JA4 helper input must be supplied separately.
 - Full MITM certificate generation is not implemented in the Rust core.
 - A plain local `gradle burpJar` packages the native library for the platform where it is run. The GitHub Actions release workflow packages a single all-platform jar containing native libraries for macOS aarch64, Windows amd64/aarch64, and Linux amd64/aarch64.

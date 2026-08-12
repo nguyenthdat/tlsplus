@@ -9,7 +9,7 @@ plugins {
 group = "com.tlsplus"
 version = "0.1.0"
 
-val rustCrateDir = layout.projectDirectory.dir("crate/tlsplus-core")
+val rustCrateDir = layout.projectDirectory.dir("crates/tlsplus-core")
 val rustManifest = rustCrateDir.file("Cargo.toml")
 val generatedKotlinDir = layout.buildDirectory.dir("generated/uniffi/kotlin")
 val generatedResourcesDir = layout.buildDirectory.dir("generated/resources/main")

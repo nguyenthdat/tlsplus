@@ -106,3 +106,15 @@ fn direct_and_proxy_use_same_canonical_profile() {
         // The proxy fallback path (get_client) also uses the same profiles crate.
     }
 }
+
+#[test]
+fn every_wreq_util_profile_is_exposed_by_tlsplus() {
+    let available = tlsplus_core::available_profiles();
+    for profile in wreq_util::Profile::VARIANTS {
+        assert!(
+            available.iter().any(|name| name == profile.name()),
+            "wreq-util profile '{}' must be exposed",
+            profile.name()
+        );
+    }
+}

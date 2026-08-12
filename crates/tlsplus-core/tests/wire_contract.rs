@@ -102,7 +102,8 @@ fn hop_by_hop_header_names_are_lowercase() {
 
 #[test]
 fn proxy_effective_timeout_minimum_is_one_second() {
-    assert_eq!(1u64, 0u64.max(1));
+    let requested = std::hint::black_box(0u64);
+    assert_eq!(1u64, requested.max(1));
 }
 
 // ── Compression transparency contract ──────────────────────────────────
