@@ -13,8 +13,8 @@ name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
 
 [dependencies]
-uniffi = { version = "0.31.2", features = ["cli"] }
-huginn-net-tls = { version = "2.0.0-rc", features = ["full", "json"] }
+uniffi = { version = "0.32.0", features = ["cli"] }
+huginn-net-tls = { version = "2.0.0", features = ["full", "json"] }
 tokio = { version = "1", features = ["full"] }
 thiserror = "2"
 wreq = { path = "../wreq", default-features = false, features = ["tokio-rt", "stream", "webpki-roots"] }
