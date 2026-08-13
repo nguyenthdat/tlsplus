@@ -386,7 +386,7 @@ jobs:
           - Added RFC 8441 WebSocket support using HTTP/2 Extended CONNECT.
           - Preserved HTTP/2 across the Burp-to-TLS+ and TLS+-to-backend connections.
           - Kept HTTP/1.1 WebSocket Upgrade and HTTP/1.0 forwarding, while avoiding standard CONNECT misclassification.
-          - Added real Burp and controlled backend verification for bidirectional RFC 8441 frames.
+          - Added Montoya header/body handoff coverage and controlled-backend verification for bidirectional RFC 8441 tunnel bytes.
           - Moved the two tests that used port 43118 to OS-assigned loopback ports.
 
           See CHANGELOG.md for the complete release summary.
