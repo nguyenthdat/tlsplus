@@ -3627,12 +3627,13 @@ dependencies = [
 
 [[package]]
 name = "tlsplus-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "futures-util",
  "hex",
  "http-body-util",
+ "http2",
  "huginn-net-tls",
  "hyper",
  "hyper-util",
