@@ -180,6 +180,7 @@ When active mode is enabled, `TlsPlusHttpHandler` rewrites outgoing Burp request
 - `X-Tlsplus-Target`: original destination URL.
 - `X-Tlsplus-Profile`: selected TLS profile.
 - `X-Tlsplus-Timeout`: per-request timeout in seconds.
+- `X-Tlsplus-Http-Version`: HTTP/2 downgrade guard, added only for Burp HTTP/2 requests.
 
 The Rust proxy strips TLS+ internal headers and hop-by-hop headers, forwards the request to the original target with the selected TLS client profile, and streams the response back to Burp.
 

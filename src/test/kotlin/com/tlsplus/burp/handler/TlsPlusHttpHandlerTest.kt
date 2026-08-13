@@ -4,6 +4,7 @@ import burp.api.montoya.core.ByteArray
 import burp.api.montoya.http.HttpService
 import burp.api.montoya.http.handler.HttpRequestToBeSent
 import burp.api.montoya.http.handler.RequestToBeSentAction
+import burp.api.montoya.http.message.HttpHeader
 import burp.api.montoya.http.message.requests.HttpRequest
 import burp.api.montoya.internal.MontoyaObjectFactory
 import burp.api.montoya.internal.ObjectFactoryLocator
@@ -13,6 +14,7 @@ import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertSame
 
 class TlsPlusHttpHandlerTest {
     @Test
@@ -30,6 +32,19 @@ class TlsPlusHttpHandlerTest {
 
             // Then: Montoya receives an explicit HTTP/2 request with the downgrade guard.
             assertEquals(1, factory.http2Requests)
+            assertSame(factory.sourceHeaders, factory.capturedHttp2Headers)
+            assertSame(factory.sourceBody, factory.capturedHttp2Body)
+            assertEquals(
+                listOf(
+                    ":method" to "CONNECT",
+                    ":scheme" to "https",
+                    ":authority" to "example.com",
+                    ":path" to "/socket",
+                    ":protocol" to "websocket",
+                    "x-request-fixture" to "preserved",
+                ),
+                factory.capturedHttp2Headers?.map { it.name() to it.value() },
+            )
             assertEquals("HTTP/2", redirected.httpVersion())
             assertEquals("127.0.0.1", redirected.httpService().host())
             assertEquals(43117, redirected.httpService().port())
@@ -88,6 +103,21 @@ private class MontoyaFactoryFixture {
     var http2Requests: Int = 0
         private set
 
+    val sourceHeaders: List<HttpHeader> =
+        listOf(
+            header(":method", "CONNECT"),
+            header(":scheme", "https"),
+            header(":authority", "example.com"),
+            header(":path", "/socket"),
+            header(":protocol", "websocket"),
+            header("x-request-fixture", "preserved"),
+        )
+    val sourceBody: ByteArray = proxy { method, _ -> defaultValue(method.returnType) }
+    var capturedHttp2Headers: List<HttpHeader>? = null
+        private set
+    var capturedHttp2Body: ByteArray? = null
+        private set
+
     val proxy: MontoyaObjectFactory =
         proxy { method, arguments ->
             when (method.name) {
@@ -97,6 +127,9 @@ private class MontoyaFactoryFixture {
 
                 "http2Request" -> {
                     http2Requests += 1
+                    @Suppress("UNCHECKED_CAST")
+                    capturedHttp2Headers = arguments[1] as List<HttpHeader>
+                    capturedHttp2Body = arguments[2] as ByteArray
                     requestProxy(
                         RequestState(
                             service = arguments[0] as HttpService,
@@ -154,11 +187,11 @@ private class MontoyaFactoryFixture {
                 }
 
                 "headers" -> {
-                    emptyList<Any>()
+                    sourceHeaders
                 }
 
                 "body" -> {
-                    proxy<ByteArray> { byteMethod, _ -> defaultValue(byteMethod.returnType) }
+                    sourceBody
                 }
 
                 "headerValue" -> {
@@ -190,6 +223,19 @@ private class MontoyaFactoryFixture {
         proxy { method, _ ->
             when (method.name) {
                 "request" -> request
+                else -> defaultValue(method.returnType)
+            }
+        }
+
+    private fun header(
+        name: String,
+        value: String,
+    ): HttpHeader =
+        proxy { method, _ ->
+            when (method.name) {
+                "name" -> name
+                "value" -> value
+                "toString" -> "$name: $value"
                 else -> defaultValue(method.returnType)
             }
         }
