@@ -164,3 +164,85 @@ async fn preserves_extended_connect_across_both_proxy_legs() {
     upstream_task.abort();
     let _ = upstream_task.await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rejects_extended_connect_when_upstream_does_not_enable_it() {
+    let _guard = TEST_MUTEX.lock().await;
+
+    let upstream = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP/2 upstream without Extended CONNECT");
+    let upstream_addr = upstream.local_addr().expect("upstream address");
+    let (observed_tx, mut observed_rx) = oneshot::channel();
+    let upstream_task = tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.expect("accept upstream client");
+        let observed_tx = Arc::new(Mutex::new(Some(observed_tx)));
+        let service = service_fn(move |_request: Request<Incoming>| {
+            let observed_tx = Arc::clone(&observed_tx);
+            async move {
+                if let Some(sender) = observed_tx.lock().await.take() {
+                    let _ = sender.send(());
+                }
+                Ok::<_, Infallible>(Response::new(Empty::<Bytes>::new()))
+            }
+        });
+        let server = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+        let _ = server
+            .serve_connection_with_upgrades(TokioIo::new(stream), service)
+            .await;
+    });
+
+    let _ = stop_local_server();
+    let started = start_local_server("127.0.0.1:0".to_owned());
+    assert!(
+        started.running,
+        "failed to start TLS+ proxy: {}",
+        started.message
+    );
+    let proxy_addr = started.listen_addr.expect("proxy listen address");
+
+    let stream = TcpStream::connect(&proxy_addr)
+        .await
+        .expect("connect to TLS+ proxy");
+    let (mut sender, connection) =
+        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(stream))
+            .await
+            .expect("perform HTTP/2 handshake with TLS+");
+    let connection_task = tokio::spawn(async move {
+        connection.await.expect("drive TLS+ HTTP/2 connection");
+    });
+
+    let mut request = Request::builder()
+        .method(Method::CONNECT)
+        .version(Version::HTTP_2)
+        .uri(format!("http://{proxy_addr}/echo"))
+        .header("x-tlsplus-target", format!("ws://{upstream_addr}/echo"))
+        .header("x-tlsplus-profile", "pass-through")
+        .header("x-tlsplus-timeout", "2")
+        .header("x-tlsplus-http-version", "HTTP/2")
+        .body(Empty::<Bytes>::new())
+        .expect("build downstream Extended CONNECT request");
+    request
+        .extensions_mut()
+        .insert(Protocol::from_static("websocket"));
+
+    let response = tokio::time::timeout(Duration::from_secs(5), sender.send_request(request))
+        .await
+        .expect("TLS+ response timed out")
+        .expect("TLS+ request failed");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert!(
+        observed_rx.try_recv().is_err(),
+        "upstream observed an unnegotiated Extended CONNECT"
+    );
+
+    drop(sender);
+    assert!(!stop_local_server().running);
+    tokio::time::timeout(Duration::from_secs(2), connection_task)
+        .await
+        .expect("downstream HTTP/2 connection did not close")
+        .expect("downstream connection task failed");
+    upstream_task.abort();
+    let _ = upstream_task.await;
+}
