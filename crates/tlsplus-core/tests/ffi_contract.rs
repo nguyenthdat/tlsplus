@@ -5,12 +5,10 @@
 //! not prose snapshots.
 
 use tlsplus_core::{
-    ProxyRequest, ProxyResponse, Ja3Result, Ja4Result, ServerStatus,
-    EngineInfo, TlsProfileInfo,
-    proxy_send_request, proxy_send_request_async,
-    start_local_server, stop_local_server, server_status,
-    ja3_calculate_client_hello, ja4_calculate_client_hello,
-    tlsplus_version, engine_info, available_profiles, get_tls_profile,
+    EngineInfo, Ja3Result, Ja4Result, ProxyRequest, ProxyResponse, ServerStatus, TlsProfileInfo,
+    available_profiles, engine_info, get_tls_profile, ja3_calculate_client_hello,
+    ja4_calculate_client_hello, proxy_send_request, proxy_send_request_async, server_status,
+    start_local_server, stop_local_server, tlsplus_version,
 };
 
 // ── 7 UniFFI Record types must exist and be constructible ────────────────
@@ -82,7 +80,7 @@ fn all_ten_uniffi_functions_are_callable() {
     assert!(!ja4.ok);
 
     // 7. start_local_server
-    let ss = start_local_server("127.0.0.1:43118".to_owned());
+    let ss = start_local_server("127.0.0.1:0".to_owned());
     assert!(ss.running);
 
     // 8. stop_local_server
@@ -164,5 +162,3 @@ fn async_proxy_signature_returns_proxy_response() {
         proxy_send_request_async(_req)
     }
 }
-
-

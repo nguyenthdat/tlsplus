@@ -45,10 +45,11 @@ pub fn start_local_server_impl(listen_addr: String) -> ServerStatus {
             };
         }
     };
-    let listener = match std::net::TcpListener::bind(addr).and_then(|listener| {
+    let (listener, listen_addr) = match std::net::TcpListener::bind(addr).and_then(|listener| {
+        let listen_addr = listener.local_addr()?;
         listener.set_nonblocking(true)?;
         let _runtime_guard = runtime.enter();
-        TcpListener::from_std(listener)
+        TcpListener::from_std(listener).map(|listener| (listener, listen_addr))
     }) {
         Ok(listener) => listener,
         Err(error) => {
@@ -103,6 +104,7 @@ pub fn start_local_server_impl(listen_addr: String) -> ServerStatus {
     });
 
     state.running = true;
+    let listen_addr = listen_addr.to_string();
     state.listen_addr = Some(listen_addr.clone());
     state.shutdown = Some(ServerShutdown {
         sender: shutdown_tx,

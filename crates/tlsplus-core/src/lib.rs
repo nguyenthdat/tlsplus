@@ -313,13 +313,15 @@ mod tests {
 
     #[test]
     fn local_server_tracks_state() {
-        let started = start_local_server("127.0.0.1:43118".to_owned());
+        let started = start_local_server("127.0.0.1:0".to_owned());
         assert!(started.running);
-        assert_eq!(started.listen_addr.as_deref(), Some("127.0.0.1:43118"));
+        let listen_addr = started.listen_addr.expect("assigned listen address");
+        let socket_addr: std::net::SocketAddr = listen_addr.parse().expect("socket address");
+        assert_ne!(socket_addr.port(), 0);
 
         let stopped = stop_local_server();
         assert!(!stopped.running);
-        assert_eq!(stopped.listen_addr.as_deref(), Some("127.0.0.1:43118"));
+        assert_eq!(stopped.listen_addr.as_deref(), Some(listen_addr.as_str()));
     }
 
     #[test]
