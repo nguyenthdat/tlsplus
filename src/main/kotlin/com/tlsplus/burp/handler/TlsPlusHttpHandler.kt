@@ -6,6 +6,7 @@ import burp.api.montoya.http.handler.HttpRequestToBeSent
 import burp.api.montoya.http.handler.HttpResponseReceived
 import burp.api.montoya.http.handler.RequestToBeSentAction
 import burp.api.montoya.http.handler.ResponseReceivedAction
+import burp.api.montoya.http.message.requests.HttpRequest
 import com.tlsplus.burp.settings.ExtensionSettings
 
 /**
@@ -36,9 +37,15 @@ class TlsPlusHttpHandler(
             val targetUrl = buildTargetUrl(requestToBeSent.url())
 
             val redirected =
-                requestToBeSent
-                    .withService(proxyService)
-                    .withHeader("X-Tlsplus-Target", targetUrl)
+                if (requestToBeSent.httpVersion().equals("HTTP/2", ignoreCase = true)) {
+                    HttpRequest
+                        .http2Request(proxyService, requestToBeSent.headers(), requestToBeSent.body())
+                        .withHeader("X-Tlsplus-Http-Version", "HTTP/2")
+                } else {
+                    requestToBeSent
+                        .withService(proxyService)
+                        .withRemovedHeader("X-Tlsplus-Http-Version")
+                }.withHeader("X-Tlsplus-Target", targetUrl)
                     .withHeader("X-Tlsplus-Profile", settings.profileName)
                     .withHeader("X-Tlsplus-Timeout", "30")
 

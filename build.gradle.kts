@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.tlsplus"
-version = "0.3.0"
+version = "0.4.0"
 
 val rustCrateDir = layout.projectDirectory.dir("crates/tlsplus-core")
 val rustManifest = rustCrateDir.file("Cargo.toml")
@@ -58,6 +58,7 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.19.1")
 
     testImplementation(kotlin("test"))
+    testImplementation("net.portswigger.burp.extensions:montoya-api:2026.4")
 }
 
 kotlin {
