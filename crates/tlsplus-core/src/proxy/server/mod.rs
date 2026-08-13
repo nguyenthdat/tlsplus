@@ -35,6 +35,14 @@ pub fn start_local_server_impl(listen_addr: String) -> ServerStatus {
         }
     };
 
+    if !addr.ip().is_loopback() {
+        return ServerStatus {
+            running: false,
+            listen_addr: None,
+            message: format!("TLS+ proxy may only bind to a loopback address, got {addr}"),
+        };
+    }
+
     let runtime = match &*RUNTIME {
         Ok(runtime) => runtime,
         Err(error) => {

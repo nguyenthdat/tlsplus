@@ -82,6 +82,46 @@ fn occupied_port_does_not_report_running() {
 }
 
 #[test]
+fn server_rejects_non_loopback_addresses() {
+    let _guard = lock();
+    let _ = stop_local_server();
+
+    for address in ["0.0.0.0:0", "[::]:0", "192.168.1.10:0"] {
+        let started = start_local_server(address.to_owned());
+
+        assert!(!started.running, "unexpectedly accepted {address}");
+        assert_eq!(None, started.listen_addr);
+        assert!(started.message.contains("loopback address"));
+        assert!(!server_status().running);
+    }
+}
+
+#[test]
+fn server_accepts_ipv4_and_ipv6_loopback_addresses() {
+    let _guard = lock();
+    let _ = stop_local_server();
+
+    for address in ["127.0.0.1:0", "[::1]:0"] {
+        let started = start_local_server(address.to_owned());
+
+        assert!(
+            started.running,
+            "failed to accept {address}: {}",
+            started.message
+        );
+        let bound: std::net::SocketAddr = started
+            .listen_addr
+            .as_deref()
+            .expect("running server has a listen address")
+            .parse()
+            .expect("listen address is a socket address");
+        assert!(bound.ip().is_loopback());
+        assert_ne!(0, bound.port());
+        assert!(!stop_local_server().running);
+    }
+}
+
+#[test]
 fn stopped_server_can_restart_immediately() {
     let _guard = lock();
     let _ = stop_local_server();
@@ -99,7 +139,12 @@ fn stopped_server_can_restart_immediately() {
 
 #[test]
 fn internal_headers_have_expected_names() {
-    let names = ["x-tlsplus-target", "x-tlsplus-profile", "x-tlsplus-timeout"];
+    let names = [
+        "x-tlsplus-target",
+        "x-tlsplus-profile",
+        "x-tlsplus-timeout",
+        "x-tlsplus-http-version",
+    ];
     for name in &names {
         assert!(name.starts_with("x-tlsplus-"));
     }
@@ -154,8 +199,13 @@ fn server_address_is_ipv4_loopback() {
 
 #[test]
 fn internal_forwarding_keys_exist() {
-    let required = ["X-Tlsplus-Target", "X-Tlsplus-Profile", "X-Tlsplus-Timeout"];
-    assert_eq!(required.len(), 3);
+    let required = [
+        "X-Tlsplus-Target",
+        "X-Tlsplus-Profile",
+        "X-Tlsplus-Timeout",
+        "X-Tlsplus-Http-Version",
+    ];
+    assert_eq!(required.len(), 4);
     for key in &required {
         let lower = key.to_ascii_lowercase();
         assert!(lower.starts_with("x-tlsplus-"));
