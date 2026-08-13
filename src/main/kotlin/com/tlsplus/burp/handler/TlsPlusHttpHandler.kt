@@ -20,18 +20,18 @@ import com.tlsplus.burp.settings.ExtensionSettings
  */
 class TlsPlusHttpHandler(
     private val settings: ExtensionSettings,
+    private val proxyEndpoint: () -> String?,
 ) : HttpHandler {
     override fun handleHttpRequestToBeSent(requestToBeSent: HttpRequestToBeSent): RequestToBeSentAction {
         if (settings.passThroughOnly) return RequestToBeSentAction.continueWith(requestToBeSent)
 
-        // Skip requests to our own proxy server (avoid loops)
-        val host = requestToBeSent.httpService().host()
-        if (host == "127.0.0.1" || host == "localhost") {
-            return RequestToBeSentAction.continueWith(requestToBeSent)
-        }
-
         return try {
-            val (proxyHost, proxyPort) = parseProxyAddr()
+            val endpoint = proxyEndpoint() ?: return RequestToBeSentAction.continueWith(requestToBeSent)
+            val (proxyHost, proxyPort) = parseProxyAddr(endpoint)
+            val requestService = requestToBeSent.httpService()
+            if (sameEndpointHost(requestService.host(), proxyHost) && requestService.port() == proxyPort) {
+                return RequestToBeSentAction.continueWith(requestToBeSent)
+            }
             val proxyService = HttpService.httpService(proxyHost, proxyPort, false)
 
             val targetUrl = buildTargetUrl(requestToBeSent.url())
@@ -60,15 +60,41 @@ class TlsPlusHttpHandler(
 
     // ── Helpers ──────────────────────────────────────────────────────
 
-    private fun parseProxyAddr(): Pair<String, Int> {
-        val addr = settings.serverListenAddr
-        val colon = addr.lastIndexOf(':')
-        return if (colon > 0) {
-            Pair(addr.substring(0, colon), addr.substring(colon + 1).toIntOrNull() ?: 43117)
+    private fun parseProxyAddr(address: String): Pair<String, Int> {
+        val host: String
+        val portText: String
+        if (address.startsWith("[")) {
+            val closingBracket = address.indexOf(']')
+            require(closingBracket > 1 && address.getOrNull(closingBracket + 1) == ':') {
+                "Invalid IPv6 proxy address: $address"
+            }
+            host = address.substring(1, closingBracket)
+            portText = address.substring(closingBracket + 2)
         } else {
-            Pair(addr, 43117)
+            val colon = address.lastIndexOf(':')
+            require(colon > 0) { "Invalid proxy address: $address" }
+            host = address.substring(0, colon)
+            portText = address.substring(colon + 1)
         }
+        val port = portText.toIntOrNull()
+        require(port != null && port in 1..65535) { "Invalid proxy port: $portText" }
+        return Pair(normalizeHost(host), port)
     }
+
+    private fun normalizeHost(host: String): String = host.removePrefix("[").removeSuffix("]").lowercase()
+
+    private fun sameEndpointHost(
+        requestHost: String,
+        proxyHost: String,
+    ): Boolean {
+        val request = normalizeHost(requestHost).replace("0:0:0:0:0:0:0:1", "::1")
+        val proxy = normalizeHost(proxyHost).replace("0:0:0:0:0:0:0:1", "::1")
+        return request == proxy ||
+            (request == "localhost" && isLoopbackLiteral(proxy)) ||
+            (proxy == "localhost" && isLoopbackLiteral(request))
+    }
+
+    private fun isLoopbackLiteral(host: String): Boolean = host == "::1" || host.startsWith("127.")
 
     private fun buildTargetUrl(url: String): String =
         if (

@@ -30,7 +30,11 @@ class TlsPlusExtension : BurpExtension {
 
         // ── Handlers ───────────────────────────────────────────────────
         // HttpHandler: redirects ALL outgoing traffic through Rust proxy
-        api.http().registerHttpHandler(TlsPlusHttpHandler(settings))
+        api.http().registerHttpHandler(
+            TlsPlusHttpHandler(settings) {
+                core.serverStatus()?.takeIf { it.`running` }?.`listenAddr`
+            },
+        )
 
         // ProxyRequestHandler: captures header order (lightweight)
         api.proxy().registerRequestHandler(TlsPlusProxyHandler(settings, log))
@@ -46,19 +50,20 @@ class TlsPlusExtension : BurpExtension {
             log("TLS+ auto-starting proxy on $addr...")
 
             var result = core.startServer(addr)
-            log(result)
+            log(result.output)
 
             // If default port is busy, try fallback ports
-            if (result.contains("already running")) {
-                // Already started from previous session — fine
-            } else if (!result.contains("RUNNING")) {
+            if (result.status?.`running` == true) {
+                result.status.`listenAddr`?.let { settings.serverListenAddr = it }
+            } else {
                 for (port in 43118..43122) {
                     val fallback = "127.0.0.1:$port"
                     log("TLS+ retrying on $fallback...")
                     result = core.startServer(fallback)
-                    if (result.contains("RUNNING")) {
-                        settings.serverListenAddr = fallback
-                        log("TLS+ proxy started on fallback port $fallback")
+                    if (result.status?.`running` == true) {
+                        val liveAddress = result.status.`listenAddr` ?: fallback
+                        settings.serverListenAddr = liveAddress
+                        log("TLS+ proxy started on fallback address $liveAddress")
                         break
                     }
                 }

@@ -18,6 +18,11 @@ import com.tlsplus.core.stopLocalServer
 import com.tlsplus.core.tlsplusVersion
 import java.util.UUID
 
+data class ServerStartResult(
+    val status: ServerStatus?,
+    val output: String,
+)
+
 class TlsPlusCore(
     private val log: (String) -> Unit = {},
 ) {
@@ -74,17 +79,13 @@ class TlsPlusCore(
 
     // ── Server lifecycle ────────────────────────────────────────────────
 
-    fun startServer(listenAddr: String): String =
+    fun startServer(listenAddr: String): ServerStartResult =
         withNative(
             block = {
                 val status: ServerStatus = startLocalServer(listenAddr)
-                buildString {
-                    appendLine("Server: ${if (status.`running`) "RUNNING" else "STOPPED"}")
-                    appendLine("Listen: ${status.`listenAddr` ?: "n/a"}")
-                    appendLine(status.`message`)
-                }
+                ServerStartResult(status, formatServerStatus(status))
             },
-            fallback = { "failed to start server: ${it.message}" },
+            fallback = { ServerStartResult(null, "failed to start server: ${it.message}") },
         )
 
     fun stopServer(): String =
@@ -212,6 +213,13 @@ class TlsPlusCore(
         )
 
     // ── Helpers ──────────────────────────────────────────────────────────
+
+    private fun formatServerStatus(status: ServerStatus): String =
+        buildString {
+            appendLine("Server: ${if (status.`running`) "RUNNING" else "STOPPED"}")
+            appendLine("Listen: ${status.`listenAddr` ?: "n/a"}")
+            appendLine(status.`message`)
+        }
 
     private fun formatJa3Result(r: Ja3Result): String =
         buildString {

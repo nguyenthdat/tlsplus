@@ -499,8 +499,11 @@ class TlsPlusTab(
         setOutput("Starting proxy on $addr …")
         runBackground {
             val result = core.startServer(addr)
+            if (result.status?.`running` == true) {
+                result.status.`listenAddr`?.let { settings.serverListenAddr = it }
+            }
             SwingUtilities.invokeLater {
-                setOutput(result)
+                setOutput(result.output)
                 refreshStatus()
             }
         }

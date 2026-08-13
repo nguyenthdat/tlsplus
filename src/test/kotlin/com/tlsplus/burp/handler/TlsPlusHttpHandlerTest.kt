@@ -24,7 +24,8 @@ class TlsPlusHttpHandlerTest {
         val previous = ObjectFactoryLocator.FACTORY
         ObjectFactoryLocator.FACTORY = factory.proxy
         try {
-            val handler = TlsPlusHttpHandler(ExtensionSettings(preferences()))
+            val settings = ExtensionSettings(preferences())
+            val handler = TlsPlusHttpHandler(settings) { settings.serverListenAddr }
             val request = factory.request("HTTP/2")
 
             // When: the handler redirects the request to TLS+.
@@ -62,7 +63,8 @@ class TlsPlusHttpHandlerTest {
         val previous = ObjectFactoryLocator.FACTORY
         ObjectFactoryLocator.FACTORY = factory.proxy
         try {
-            val handler = TlsPlusHttpHandler(ExtensionSettings(preferences()))
+            val settings = ExtensionSettings(preferences())
+            val handler = TlsPlusHttpHandler(settings) { settings.serverListenAddr }
             val request = factory.request("HTTP/1.1")
 
             // When: the handler redirects the request to TLS+.
@@ -78,18 +80,85 @@ class TlsPlusHttpHandlerTest {
         }
     }
 
-    private fun preferences(): Preferences =
-        proxy { method, _ ->
+    @Test
+    fun normalizes_ipv6_proxy_addresses_for_montoya() {
+        val factory = MontoyaFactoryFixture()
+        val previous = ObjectFactoryLocator.FACTORY
+        ObjectFactoryLocator.FACTORY = factory.proxy
+        try {
+            val settings = ExtensionSettings(preferences("[::1]:45678"))
+            val handler = TlsPlusHttpHandler(settings) { settings.serverListenAddr }
+
+            val redirected = handler.handleHttpRequestToBeSent(factory.request("HTTP/2")).request()
+
+            assertEquals("::1", redirected.httpService().host())
+            assertEquals(45678, redirected.httpService().port())
+        } finally {
+            ObjectFactoryLocator.FACTORY = previous
+        }
+    }
+
+    @Test
+    fun skips_only_the_exact_embedded_proxy_endpoint() {
+        val factory = MontoyaFactoryFixture()
+        val previous = ObjectFactoryLocator.FACTORY
+        ObjectFactoryLocator.FACTORY = factory.proxy
+        try {
+            val settings = ExtensionSettings(preferences("[::1]:45678"))
+            val handler = TlsPlusHttpHandler(settings) { settings.serverListenAddr }
+            val proxyRequest = factory.request("HTTP/2", host = "::1", port = 45678, secure = false)
+            val proxyAliasRequest = factory.request("HTTP/2", host = "localhost", port = 45678, secure = false)
+            val otherLoopbackFamilyRequest =
+                factory.request("HTTP/2", host = "127.0.0.1", port = 45678, secure = false)
+            val otherLoopbackRequest = factory.request("HTTP/2", host = "::1", port = 8443, secure = true)
+
+            assertSame(proxyRequest, handler.handleHttpRequestToBeSent(proxyRequest).request())
+            assertSame(proxyAliasRequest, handler.handleHttpRequestToBeSent(proxyAliasRequest).request())
+            val familyRedirect = handler.handleHttpRequestToBeSent(otherLoopbackFamilyRequest).request()
+            assertEquals("::1", familyRedirect.httpService().host())
+            assertEquals(45678, familyRedirect.httpService().port())
+            val redirected = handler.handleHttpRequestToBeSent(otherLoopbackRequest).request()
+            assertEquals("::1", redirected.httpService().host())
+            assertEquals(45678, redirected.httpService().port())
+        } finally {
+            ObjectFactoryLocator.FACTORY = previous
+        }
+    }
+
+    @Test
+    fun routes_through_the_live_os_assigned_endpoint() {
+        val factory = MontoyaFactoryFixture()
+        val previous = ObjectFactoryLocator.FACTORY
+        ObjectFactoryLocator.FACTORY = factory.proxy
+        try {
+            val settings = ExtensionSettings(preferences("127.0.0.1:0"))
+            val handler = TlsPlusHttpHandler(settings) { "127.0.0.1:45678" }
+
+            val redirected = handler.handleHttpRequestToBeSent(factory.request("HTTP/2")).request()
+
+            assertEquals("127.0.0.1", redirected.httpService().host())
+            assertEquals(45678, redirected.httpService().port())
+        } finally {
+            ObjectFactoryLocator.FACTORY = previous
+        }
+    }
+
+    private fun preferences(serverListenAddr: String? = null): Preferences {
+        val strings = mutableMapOf<String, String>()
+        serverListenAddr?.let { strings["tlsplus.serverListenAddr"] = it }
+        return proxy { method, arguments ->
             when (method.name) {
                 "getBoolean" -> {
                     false
                 }
 
                 "getString" -> {
-                    when (method.parameterTypes.firstOrNull()) {
-                        String::class.java -> null
-                        else -> null
-                    }
+                    strings[arguments[0] as String]
+                }
+
+                "setString" -> {
+                    strings[arguments[0] as String] = arguments[1] as String
+                    null
                 }
 
                 else -> {
@@ -97,6 +166,7 @@ class TlsPlusHttpHandlerTest {
                 }
             }
         }
+    }
 }
 
 private class MontoyaFactoryFixture {
@@ -148,10 +218,15 @@ private class MontoyaFactoryFixture {
             }
         }
 
-    fun request(version: String): HttpRequestToBeSent =
+    fun request(
+        version: String,
+        host: String = "example.com",
+        port: Int = 443,
+        secure: Boolean = true,
+    ): HttpRequestToBeSent =
         requestProxy(
             RequestState(
-                service = service(arrayOf<Any?>("example.com", 443, true)),
+                service = service(arrayOf<Any?>(host, port, secure)),
                 version = version,
             ),
         ) as HttpRequestToBeSent
