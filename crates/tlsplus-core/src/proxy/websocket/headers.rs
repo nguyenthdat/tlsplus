@@ -5,6 +5,8 @@ use hyper::{
     },
 };
 
+use super::WebSocketTransport;
+
 pub(super) fn normalize_target(target: &str) -> Result<Uri, String> {
     let (scheme, remainder) = target
         .split_once("://")
@@ -46,7 +48,7 @@ fn connection_tokens(headers: &HeaderMap) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn request_headers(source: &HeaderMap) -> HeaderMap {
+pub(super) fn request_headers(source: &HeaderMap, transport: WebSocketTransport) -> HeaderMap {
     let nominated = connection_tokens(source);
     let mut headers = source
         .iter()
@@ -72,12 +74,14 @@ pub(super) fn request_headers(source: &HeaderMap) -> HeaderMap {
             headers.append(name.clone(), value.clone());
             headers
         });
-    headers.insert(CONNECTION, HeaderValue::from_static("Upgrade"));
-    headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
+    if transport == WebSocketTransport::Http1 {
+        headers.insert(CONNECTION, HeaderValue::from_static("Upgrade"));
+        headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
+    }
     headers
 }
 
-pub(super) fn response_headers(source: &HeaderMap) -> HeaderMap {
+pub(super) fn response_headers(source: &HeaderMap, transport: WebSocketTransport) -> HeaderMap {
     let nominated = connection_tokens(source);
     let mut headers = source
         .iter()
@@ -97,7 +101,9 @@ pub(super) fn response_headers(source: &HeaderMap) -> HeaderMap {
             headers.append(name.clone(), value.clone());
             headers
         });
-    headers.insert(CONNECTION, HeaderValue::from_static("Upgrade"));
-    headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
+    if transport == WebSocketTransport::Http1 {
+        headers.insert(CONNECTION, HeaderValue::from_static("Upgrade"));
+        headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
+    }
     headers
 }

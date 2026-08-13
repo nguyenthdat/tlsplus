@@ -2,7 +2,7 @@ use std::convert::Infallible;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use hyper::{Request, Response, StatusCode, Uri, body::Incoming};
+use hyper::{Request, Response, StatusCode, Uri, Version, body::Incoming};
 use tokio::sync::mpsc;
 
 use super::websocket::{BridgeJob, UpgradeRequest};
@@ -35,9 +35,16 @@ pub(crate) async fn proxy_service(
     request: Request<Incoming>,
     bridge_tx: mpsc::Sender<BridgeJob>,
 ) -> Result<Response<ServerBody>, Infallible> {
+    if !declared_version_matches(&request) {
+        return Ok(error_response(
+            StatusCode::BAD_REQUEST,
+            "HTTP version changed between Burp and the TLS+ proxy",
+        ));
+    }
+
     match super::websocket::classify(&request) {
-        UpgradeRequest::WebSocket => {
-            return Ok(super::websocket::proxy(request, bridge_tx).await);
+        UpgradeRequest::WebSocket(transport) => {
+            return Ok(super::websocket::proxy(request, bridge_tx, transport).await);
         }
         UpgradeRequest::Invalid => {
             return Ok(error_response(
@@ -103,6 +110,7 @@ pub(crate) async fn proxy_service(
 
     let outbound = client
         .request(parts.method, uri)
+        .version(parts.version)
         .headers(headers)
         .body(wreq::Body::wrap_stream(body.into_data_stream()))
         .send();
@@ -124,6 +132,20 @@ pub(crate) async fn proxy_service(
     };
 
     Ok(convert_response(response))
+}
+
+fn declared_version_matches(request: &Request<Incoming>) -> bool {
+    match request
+        .headers()
+        .get("x-tlsplus-http-version")
+        .and_then(|value| value.to_str().ok())
+    {
+        Some(version) if version.eq_ignore_ascii_case("HTTP/2") => {
+            request.version() == Version::HTTP_2
+        }
+        Some(_) => false,
+        None => true,
+    }
 }
 
 pub(crate) fn convert_response(response: wreq::Response) -> Response<ServerBody> {
