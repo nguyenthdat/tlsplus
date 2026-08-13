@@ -1,12 +1,15 @@
 use std::net::SocketAddr;
 
-use hyper::{server::conn::http1, service::service_fn};
-use hyper_util::rt::TokioIo;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, task::JoinSet};
 
 use crate::{SERVER_STATE, ServerShutdown, ServerStatus};
 
-use super::{RUNTIME, service::proxy_service};
+use super::RUNTIME;
+
+mod connection;
+
+const CONNECTION_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+const SERVER_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 pub fn start_local_server_impl(listen_addr: String) -> ServerStatus {
     let mut state = SERVER_STATE
@@ -59,31 +62,43 @@ pub fn start_local_server_impl(listen_addr: String) -> ServerStatus {
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
     let (completion_tx, completion_rx) = std::sync::mpsc::channel();
     runtime.spawn(async move {
+        let (connection_shutdown_tx, connection_shutdown_rx) = tokio::sync::watch::channel(false);
+        let mut connections = JoinSet::new();
         loop {
             tokio::select! {
-                _ = &mut shutdown_rx => break,
+                _ = &mut shutdown_rx => {
+                    let _ = connection_shutdown_tx.send(true);
+                    break;
+                }
                 accept = listener.accept() => match accept {
                     Ok((stream, _)) => {
-                        let io = TokioIo::new(stream);
-                        tokio::spawn(async move {
-                            if let Err(error) = http1::Builder::new()
-                                .preserve_header_case(true)
-                                .title_case_headers(true)
-                                .serve_connection(io, service_fn(proxy_service))
-                                .await
-                                && !error.to_string().contains("connection closed")
-                                && !error.to_string().contains("broken pipe")
-                                && !error.to_string().contains("protocol error")
-                            {
-                                eprintln!("tlsplus proxy: connection error: {error}");
-                            }
-                        });
+                        connections.spawn(connection::run(stream, connection_shutdown_rx.clone()));
                     }
                     Err(error) => eprintln!("tlsplus proxy: accept error: {error}"),
                 },
+                Some(result) = connections.join_next(), if !connections.is_empty() => {
+                    if let Err(error) = result {
+                        eprintln!("tlsplus proxy: connection task failed: {error}");
+                    }
+                }
             }
         }
         drop(listener);
+
+        let drain = async {
+            while let Some(result) = connections.join_next().await {
+                if let Err(error) = result {
+                    eprintln!("tlsplus proxy: connection task failed: {error}");
+                }
+            }
+        };
+        if tokio::time::timeout(CONNECTION_SHUTDOWN_GRACE, drain)
+            .await
+            .is_err()
+        {
+            connections.abort_all();
+            while connections.join_next().await.is_some() {}
+        }
         let _ = completion_tx.send(());
     });
 
@@ -133,12 +148,19 @@ pub fn stop_local_server_impl() -> ServerStatus {
     let previous_addr = state.listen_addr.take();
     if let Some(shutdown) = state.shutdown.take() {
         let _ = shutdown.sender.send(());
-        let _ = shutdown.completion.recv();
+        let completed = shutdown
+            .completion
+            .recv_timeout(SERVER_STOP_TIMEOUT)
+            .is_ok();
         state.running = false;
         ServerStatus {
             running: false,
             listen_addr: previous_addr,
-            message: "Local HTTP forward proxy stopped".to_owned(),
+            message: if completed {
+                "Local HTTP forward proxy stopped".to_owned()
+            } else {
+                "Local HTTP forward proxy stop timed out".to_owned()
+            },
         }
     } else {
         state.running = false;

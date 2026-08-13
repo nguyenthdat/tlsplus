@@ -3,9 +3,12 @@ use std::convert::Infallible;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, StatusCode, Uri, body::Incoming};
+use tokio::sync::mpsc;
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-type ServerBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
+use super::websocket::{BridgeJob, UpgradeRequest};
+
+pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
+pub(crate) type ServerBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 pub(crate) fn boxed_error(message: &str) -> ServerBody {
     Full::new(Bytes::copy_from_slice(message.as_bytes()))
@@ -30,7 +33,21 @@ pub(crate) fn is_hop_by_hop(name: &str) -> bool {
 
 pub(crate) async fn proxy_service(
     request: Request<Incoming>,
+    bridge_tx: mpsc::Sender<BridgeJob>,
 ) -> Result<Response<ServerBody>, Infallible> {
+    match super::websocket::classify(&request) {
+        UpgradeRequest::WebSocket => {
+            return Ok(super::websocket::proxy(request, bridge_tx).await);
+        }
+        UpgradeRequest::Invalid => {
+            return Ok(error_response(
+                StatusCode::BAD_REQUEST,
+                "Invalid WebSocket upgrade request",
+            ));
+        }
+        UpgradeRequest::None => {}
+    }
+
     let (parts, body) = request.into_parts();
     let target = parts
         .headers
@@ -106,16 +123,20 @@ pub(crate) async fn proxy_service(
         }
     };
 
+    Ok(convert_response(response))
+}
+
+pub(crate) fn convert_response(response: wreq::Response) -> Response<ServerBody> {
     let mut response: hyper::Response<wreq::Body> = response.into();
     response.headers_mut().remove("transfer-encoding");
     let (parts, body) = response.into_parts();
     let body = body
         .map_err(|error| -> BoxError { Box::new(error) })
         .boxed();
-    Ok(Response::from_parts(parts, body))
+    Response::from_parts(parts, body)
 }
 
-fn error_response(status: StatusCode, message: &str) -> Response<ServerBody> {
+pub(crate) fn error_response(status: StatusCode, message: &str) -> Response<ServerBody> {
     let mut response = Response::new(boxed_error(message));
     *response.status_mut() = status;
     response

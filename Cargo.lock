@@ -3630,6 +3630,7 @@ name = "tlsplus-core"
 version = "0.3.0"
 dependencies = [
  "bytes",
+ "futures-util",
  "hex",
  "http-body-util",
  "huginn-net-tls",
@@ -3638,6 +3639,7 @@ dependencies = [
  "md5",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-tungstenite",
  "uniffi",
  "wreq",
  "wreq-util",

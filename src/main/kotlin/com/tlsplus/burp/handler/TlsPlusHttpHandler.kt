@@ -64,7 +64,12 @@ class TlsPlusHttpHandler(
     }
 
     private fun buildTargetUrl(url: String): String =
-        if (url.startsWith("http://") || url.startsWith("https://")) {
+        if (
+            url.startsWith("http://") ||
+            url.startsWith("https://") ||
+            url.startsWith("ws://") ||
+            url.startsWith("wss://")
+        ) {
             url
         } else {
             "https://$url"

@@ -13,6 +13,7 @@ use std::sync::LazyLock;
 pub(crate) mod forward;
 pub(crate) mod server;
 pub(crate) mod service;
+pub(crate) mod websocket;
 
 // Re-export public API
 pub use server::{
