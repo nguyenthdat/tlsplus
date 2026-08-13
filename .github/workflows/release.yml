@@ -301,7 +301,7 @@ jobs:
           test "${actual_count}" -eq "${#expected[@]}"
 
       - name: Build all-platform Burp jar
-        run: gradle burpJar -Ptlsplus.nativeBundleDir=build/prebuilt-native --stacktrace
+        run: gradle test burpJar -Ptlsplus.nativeBundleDir=build/prebuilt-native --stacktrace
 
       - name: Stage and verify release assets
         env:
@@ -385,9 +385,9 @@ jobs:
           Highlights:
           - Added RFC 8441 WebSocket support using HTTP/2 Extended CONNECT.
           - Preserved HTTP/2 across the Burp-to-TLS+ and TLS+-to-backend connections.
-          - Kept HTTP/1.1 WebSocket Upgrade, HTTP/1.0, and standard CONNECT compatibility.
+          - Kept HTTP/1.1 WebSocket Upgrade and HTTP/1.0 forwarding, while avoiding standard CONNECT misclassification.
           - Added real Burp and controlled backend verification for bidirectional RFC 8441 frames.
-          - Made server lifecycle tests use OS-assigned ports for reliable parallel execution.
+          - Moved the two tests that used port 43118 to OS-assigned loopback ports.
 
           See CHANGELOG.md for the complete release summary.
           EOF

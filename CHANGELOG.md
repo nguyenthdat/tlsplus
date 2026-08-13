@@ -8,17 +8,17 @@ All notable user-facing changes to TLS+ are documented in this file.
 
 - RFC 8441 WebSocket support using HTTP/2 Extended CONNECT with transparent bidirectional frame transport.
 - Protocol-preserving HTTP/2 forwarding across the Burp-to-TLS+ and TLS+-to-backend connections.
-- Controlled HTTP/2, Extended CONNECT, downgrade, standard CONNECT, and Montoya routing integration tests.
+- Controlled HTTP/2, Extended CONNECT, downgrade, standard CONNECT classification, and Montoya routing integration tests.
 
 ### Changed
 
 - The embedded proxy now accepts HTTP/1.1 and HTTP/2 connections and advertises Extended CONNECT support.
 - Burp HTTP/2 requests are rebuilt explicitly with Montoya's HTTP/2 request factory and rejected if the local connection is silently downgraded.
-- Server lifecycle tests use OS-assigned loopback ports so they remain isolated from running Burp instances and parallel test processes.
+- The two lifecycle/API tests that previously used port `43118` now request OS-assigned loopback ports, so they remain isolated from a running Burp instance.
 
 ### Fixed
 
-- Preserved HTTP/1.0 and standard CONNECT compatibility while adding RFC 8441 classification.
+- Preserved HTTP/1.0 forwarding and avoided misclassifying standard CONNECT requests as RFC 8441 WebSockets.
 - Kept existing HTTP/1.1 WebSocket upgrades working alongside multiplexed HTTP/2 tunnels.
 
 ## [0.3.0] - 2026-08-12
