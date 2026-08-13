@@ -4,7 +4,7 @@ TLS+ is a Burp Suite Montoya extension that routes Burp traffic through a native
 
 It is built as a Kotlin/JVM Burp extension with a Rust `cdylib` packaged inside the Burp-loadable jar through UniFFI and JNA.
 
-Current release: `0.3.0`. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+Current release: `0.4.0`. See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Current Capabilities
 
@@ -12,6 +12,8 @@ Current release: `0.3.0`. See [CHANGELOG.md](CHANGELOG.md) for release notes.
 - Native Rust core exposed to Kotlin through UniFFI-generated bindings.
 - Direct Rust HTTP API backed by the shared profile-aware wreq client pool.
 - Embedded local HTTP forward proxy with Hyper ingress and wreq outbound transport.
+- Protocol-preserving HTTP/2 forwarding from Burp through TLS+ to HTTP/2 backends.
+- HTTP/1.1 WebSocket Upgrade and RFC 8441 HTTP/2 Extended CONNECT tunneling.
 - Automatic proxy startup on extension load, defaulting to `127.0.0.1:43117`.
 - Burp HTTP handler that redirects outgoing Burp traffic through the local TLS+ proxy when active mode is enabled.
 - Burp Proxy handler that observes request header order for fingerprint diagnostics.
