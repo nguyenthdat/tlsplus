@@ -383,11 +383,11 @@ jobs:
           TLS+ ${VERSION}
 
           Highlights:
-          - Added a direct Rust HttpClient API using the shared profile-aware wreq connection pool.
-          - Migrated the native core to the crates/tlsplus-core workspace layout and wreq transport.
-          - Improved embedded proxy shutdown and immediate restart behavior.
-          - Added all-platform Burp packaging for macOS ARM64, Windows x64/ARM64, and Linux x64/ARM64.
-          - Added opt-in Chrome 149 TLS fingerprint QA against BrowserScan and BrowserLeaks.
+          - Added RFC 8441 WebSocket support using HTTP/2 Extended CONNECT.
+          - Preserved HTTP/2 across the Burp-to-TLS+ and TLS+-to-backend connections.
+          - Kept HTTP/1.1 WebSocket Upgrade, HTTP/1.0, and standard CONNECT compatibility.
+          - Added real Burp and controlled backend verification for bidirectional RFC 8441 frames.
+          - Made server lifecycle tests use OS-assigned ports for reliable parallel execution.
 
           See CHANGELOG.md for the complete release summary.
           EOF
