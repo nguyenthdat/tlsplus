@@ -1,11 +1,13 @@
 //! T13 — Profile conversion contract.
 //!
-//! Locks all 15 canonical profile names, case folding, ALPN protocols,
+//! Locks all 17 canonical profile names, case folding, ALPN protocols,
 //! pool keys, and JA4 fixtures. No TBD entries — every profile must resolve.
 
 use tlsplus_core::get_tls_profile;
 
 const ALL_PROFILES: &[&str] = &[
+    "chrome_151",
+    "chrome_150",
     "chrome_149",
     "chrome_149_stable",
     "firefox_current",
@@ -24,7 +26,7 @@ const ALL_PROFILES: &[&str] = &[
 ];
 
 #[test]
-fn all_fifteen_browser_profiles_resolve() {
+fn all_seventeen_browser_profiles_resolve() {
     for name in ALL_PROFILES {
         let info = get_tls_profile((*name).to_owned());
         assert!(
@@ -61,7 +63,14 @@ fn profile_lookup_is_case_insensitive_for_all() {
 
 #[test]
 fn chrome_profiles_have_h2_alpn() {
-    let chrome_profiles = ["chrome_149", "chrome_120", "chrome_130", "android_chrome"];
+    let chrome_profiles = [
+        "chrome_151",
+        "chrome_150",
+        "chrome_149",
+        "chrome_120",
+        "chrome_130",
+        "android_chrome",
+    ];
     for name in &chrome_profiles {
         let info = get_tls_profile((*name).to_owned()).expect(name);
         assert!(

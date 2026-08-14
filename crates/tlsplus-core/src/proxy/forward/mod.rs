@@ -4,11 +4,24 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use hyper::{HeaderMap, Method, header::HeaderName};
+use serde::Deserialize;
 
 use crate::{ProxyResponse, transport::get_wreq_client};
 
 const MAX_RETRY_BODY_SIZE: usize = 1024 * 1024;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+const TLS_DIAGNOSTIC_AUTHORITY: &str = "tls.peet.ws";
+const TLS_DIAGNOSTIC_PATH: &str = "/api/all";
+
+#[derive(Deserialize)]
+struct TlsDiagnosticResponse {
+    tls: TlsDiagnostic,
+}
+
+#[derive(Deserialize)]
+struct TlsDiagnostic {
+    ja4: String,
+}
 
 pub(crate) fn build_forward_headers(headers: &[String]) -> HeaderMap {
     let mut map = HeaderMap::new();
@@ -42,8 +55,52 @@ fn response_headers(response: &wreq::Response) -> Vec<String> {
         .collect()
 }
 
-async fn convert_response(response: wreq::Response) -> Result<ProxyResponse, String> {
-    let status_code = response.status().as_u16();
+fn diagnostic_ja4(uri: &wreq::Uri, status: hyper::StatusCode, body: &[u8]) -> Option<String> {
+    if !status.is_success()
+        || uri.scheme_str() != Some("https")
+        || !uri
+            .host()
+            .is_some_and(|host| host.eq_ignore_ascii_case(TLS_DIAGNOSTIC_AUTHORITY))
+        || uri.port_u16().is_some_and(|port| port != 443)
+        || uri.path() != TLS_DIAGNOSTIC_PATH
+        || uri.query().is_some()
+    {
+        return None;
+    }
+
+    let response = serde_json::from_slice::<TlsDiagnosticResponse>(body).ok()?;
+    is_valid_ja4(&response.tls.ja4).then_some(response.tls.ja4)
+}
+
+fn is_valid_ja4(value: &str) -> bool {
+    let mut parts = value.split('_');
+    let Some(prefix) = parts.next() else {
+        return false;
+    };
+    let Some(cipher_hash) = parts.next() else {
+        return false;
+    };
+    let Some(extension_hash) = parts.next() else {
+        return false;
+    };
+
+    parts.next().is_none()
+        && prefix.len() == 10
+        && prefix.is_ascii()
+        && prefix
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+        && [cipher_hash, extension_hash].into_iter().all(|hash| {
+            hash.len() == 12 && hash.chars().all(|character| character.is_ascii_hexdigit())
+        })
+}
+
+async fn convert_response(
+    uri: &wreq::Uri,
+    response: wreq::Response,
+) -> Result<ProxyResponse, String> {
+    let status = response.status();
+    let status_code = status.as_u16();
     let headers = response_headers(&response);
     let body = response
         .bytes()
@@ -51,12 +108,14 @@ async fn convert_response(response: wreq::Response) -> Result<ProxyResponse, Str
         .map_err(|error| format!("Failed to read response body: {error}"))?
         .to_vec();
 
+    let ja4 = diagnostic_ja4(uri, status, &body);
+
     Ok(ProxyResponse {
         id: String::new(),
         status_code,
         headers,
         body,
-        ja4: None,
+        ja4,
         error: None,
     })
 }
@@ -133,40 +192,11 @@ pub(crate) async fn forward_request(
             continue;
         }
 
-        return convert_response(response).await;
+        return convert_response(&uri, response).await;
     }
 
     Err(last_error)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn classifies_idempotent_methods() {
-        for method in [
-            Method::GET,
-            Method::HEAD,
-            Method::OPTIONS,
-            Method::PUT,
-            Method::DELETE,
-        ] {
-            assert!(is_idempotent(&method));
-        }
-        assert!(!is_idempotent(&Method::POST));
-        assert!(!is_idempotent(&Method::PATCH));
-    }
-
-    #[test]
-    fn preserves_repeated_header_values() {
-        let headers = vec!["X-Value: one".to_owned(), "X-Value: two".to_owned()];
-        let map = build_forward_headers(&headers);
-        let values: Vec<_> = map
-            .get_all("x-value")
-            .iter()
-            .map(|value| value.to_str().expect("test header is UTF-8"))
-            .collect();
-        assert_eq!(values, ["one", "two"]);
-    }
-}
+mod tests;

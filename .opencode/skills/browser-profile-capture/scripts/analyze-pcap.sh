@@ -75,7 +75,7 @@ else
 fi
 flow_filter="tcp.stream == $tcp_stream && $client_src_filter && tcp.srcport == $client_port && $server_dst_filter && tcp.dstport == $server_port"
 client_hello_filter="$flow_filter && tls.handshake.type == 1 && tls.handshake.extensions_server_name == \"$server_name\""
-client_settings_filter="$flow_filter && http2.type == 4 && http2.streamid == 0 && !http2.flags.ack.settings"
+client_settings_filter="$flow_filter && http2.type == 4 && http2.streamid == 0 && http2.flags.ack.settings == 0"
 
 tshark_args=(-r "$pcap")
 if [[ -n $tls_keylog ]]; then

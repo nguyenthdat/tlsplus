@@ -124,7 +124,7 @@ pub struct ProxyResponse {
     pub headers: Vec<String>,
     /// Response body bytes
     pub body: Vec<u8>,
-    /// JA4 fingerprint observed on the outbound TLS connection (future)
+    /// JA4 reported by the trusted outbound TLS diagnostics endpoint, when used
     pub ja4: Option<String>,
     /// Error message if forwarding failed
     pub error: Option<String>,

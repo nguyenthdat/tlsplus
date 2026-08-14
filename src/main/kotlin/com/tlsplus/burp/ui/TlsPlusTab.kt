@@ -113,7 +113,7 @@ class TlsPlusTab(
 
     // ── Proxy test tab fields ───────────────────────────────────────────────
 
-    private val proxyTestUrl = themedField("https://httpbin.org/get", 40)
+    private val proxyTestUrl = themedField(OUTBOUND_TEST_URL, 40)
     private val proxyTestMethod = themedCombo(arrayOf("GET", "POST", "PUT", "DELETE", "HEAD"))
     private val proxyTestProfile = themedCombo(core.profiles().toTypedArray())
     private val sendRequestButton = JButton("Send Request")
@@ -440,7 +440,9 @@ class TlsPlusTab(
         panel.add(
             hintLabel(
                 "Sends a direct outbound request through the Rust hyper + BoringSSL client, " +
-                    "bypassing Burp's HTTP stack. Same engine the local proxy uses for forwarding.",
+                    "bypassing Burp's HTTP stack. The default test shares your public IP and selected " +
+                    "TLS/HTTP fingerprint with tls.peet.ws.",
+                rows = 2,
             ),
             c,
         )
@@ -579,11 +581,7 @@ class TlsPlusTab(
                 core.sendProxyRequest(
                     method = method,
                     url = url,
-                    headers =
-                        listOf(
-                            "User-Agent: TLS+/0.2.0",
-                            "Accept: */*",
-                        ),
+                    headers = OUTBOUND_TEST_HEADERS,
                     body = ByteArray(0),
                     profile = profile,
                     timeoutSecs = 30,
@@ -741,8 +739,11 @@ class TlsPlusTab(
      * the preferred height so the hint never stretches vertically inside a
      * `BoxLayout`.
      */
-    private fun hintLabel(text: String): JComponent =
-        object : JTextArea(text) {
+    private fun hintLabel(
+        text: String,
+        rows: Int = 1,
+    ): JComponent =
+        object : JTextArea(text, rows, 0) {
             override fun getMaximumSize(): Dimension = Dimension(super.getMaximumSize().width, preferredSize.height)
         }.apply {
             isEditable = false

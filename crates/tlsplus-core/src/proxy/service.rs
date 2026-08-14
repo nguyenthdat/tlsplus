@@ -108,9 +108,13 @@ pub(crate) async fn proxy_service(
             headers
         });
 
-    let outbound = client
-        .request(parts.method, uri)
-        .version(parts.version)
+    let outbound_version = outbound_version_override(&uri, parts.version);
+    let outbound = client.request(parts.method, uri);
+    let outbound = match outbound_version {
+        Some(version) => outbound.version(version),
+        None => outbound,
+    };
+    let outbound = outbound
         .headers(headers)
         .body(wreq::Body::wrap_stream(body.into_data_stream()))
         .send();
@@ -132,6 +136,10 @@ pub(crate) async fn proxy_service(
     };
 
     Ok(convert_response(response))
+}
+
+fn outbound_version_override(uri: &Uri, inbound: Version) -> Option<Version> {
+    (uri.scheme_str() == Some("http")).then_some(inbound)
 }
 
 fn declared_version_matches(request: &Request<Incoming>) -> bool {
@@ -162,4 +170,30 @@ pub(crate) fn error_response(status: StatusCode, message: &str) -> Response<Serv
     let mut response = Response::new(boxed_error(message));
     *response.status_mut() = status;
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn https_origins_negotiate_http_version_with_alpn() {
+        let uri: Uri = "https://example.com/"
+            .parse()
+            .expect("parse HTTPS fixture URI");
+
+        assert_eq!(outbound_version_override(&uri, Version::HTTP_2), None);
+    }
+
+    #[test]
+    fn cleartext_origins_preserve_ingress_http_version() {
+        let uri: Uri = "http://example.com/"
+            .parse()
+            .expect("parse HTTP fixture URI");
+
+        assert_eq!(
+            outbound_version_override(&uri, Version::HTTP_2),
+            Some(Version::HTTP_2)
+        );
+    }
 }
