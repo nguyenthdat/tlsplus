@@ -79,34 +79,47 @@ pub(crate) async fn proxy_service(
     }
 
     let (parts, body) = request.into_parts();
-    let target = parts
-        .headers
-        .get("x-tlsplus-target")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
+    let target = match internal_header(&parts.headers, "x-tlsplus-target") {
+        Ok(Some(target)) if !target.is_empty() => target.to_owned(),
+        Ok(_) => {
+            return Ok(error_response(
+                StatusCode::BAD_REQUEST,
+                "Missing X-Tlsplus-Target header",
+            ));
+        }
+        Err(message) => return Ok(error_response(StatusCode::BAD_REQUEST, message)),
+    };
 
-    if target.is_empty() {
-        return Ok(error_response(
-            StatusCode::BAD_REQUEST,
-            "Missing X-Tlsplus-Target header",
-        ));
-    }
-
-    let profile = parts
-        .headers
-        .get("x-tlsplus-profile")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("pass-through")
-        .to_owned();
-    let timeout_secs = parts
-        .headers
-        .get("x-tlsplus-timeout")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(30);
-    let uri: Uri = match target.parse() {
-        Ok(uri) => uri,
+    let profile = match internal_header(&parts.headers, "x-tlsplus-profile") {
+        Ok(Some(profile)) if !profile.is_empty() => profile.to_owned(),
+        Ok(_) => "pass-through".to_owned(),
+        Err(message) => return Ok(error_response(StatusCode::BAD_REQUEST, message)),
+    };
+    let timeout_secs = match internal_header(&parts.headers, "x-tlsplus-timeout") {
+        Ok(Some(value)) => match value.parse::<u64>() {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid X-Tlsplus-Timeout header",
+                ));
+            }
+        },
+        Ok(None) => 30,
+        Err(message) => return Ok(error_response(StatusCode::BAD_REQUEST, message)),
+    };
+    let uri = match target.parse::<Uri>() {
+        Ok(uri)
+            if matches!(uri.scheme_str(), Some("http" | "https")) && uri.authority().is_some() =>
+        {
+            uri
+        }
+        Ok(_) => {
+            return Ok(error_response(
+                StatusCode::BAD_REQUEST,
+                "X-Tlsplus-Target must be an absolute HTTP(S) URL",
+            ));
+        }
         Err(error) => {
             return Ok(error_response(
                 StatusCode::BAD_REQUEST,
@@ -131,14 +144,10 @@ pub(crate) async fn proxy_service(
             headers
         });
 
-    let original_version = declared_version.unwrap_or(parts.version);
-    let outbound_version = outbound_version_override(&uri, original_version);
-    let outbound = client.request(parts.method, uri);
-    let outbound = match outbound_version {
-        Some(version) => outbound.version(version),
-        None => outbound,
-    };
-    let outbound = outbound
+    let outbound_version = outbound_http_version(declared_version, parts.version);
+    let outbound = client
+        .request(parts.method, uri)
+        .version(outbound_version)
         .headers(headers)
         .body(wreq::Body::wrap_stream(body.into_data_stream()))
         .send();
@@ -162,8 +171,26 @@ pub(crate) async fn proxy_service(
     Ok(convert_response(response))
 }
 
-fn outbound_version_override(_uri: &Uri, original: Version) -> Option<Version> {
-    Some(original)
+fn outbound_http_version(declared: Option<Version>, wire: Version) -> Version {
+    declared.unwrap_or(wire)
+}
+
+fn internal_header<'a>(
+    headers: &'a HeaderMap,
+    name: &str,
+) -> Result<Option<&'a str>, &'static str> {
+    let mut values = headers.get_all(name).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err("Duplicate X-Tlsplus metadata header");
+    }
+
+    value
+        .to_str()
+        .map(Some)
+        .map_err(|_| "Invalid X-Tlsplus metadata header encoding")
 }
 
 fn declared_http_version(headers: &HeaderMap) -> DeclaredHttpVersion {
@@ -202,38 +229,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn https_origins_preserve_original_http_version() {
-        let uri: Uri = "https://example.com/"
-            .parse()
-            .expect("parse HTTPS fixture URI");
-
+    fn declared_http2_version_wins_over_an_http1_proxy_hop() {
         assert_eq!(
-            outbound_version_override(&uri, Version::HTTP_2),
-            Some(Version::HTTP_2)
+            outbound_http_version(Some(Version::HTTP_2), Version::HTTP_11),
+            Version::HTTP_2
         );
     }
 
     #[test]
-    fn cleartext_origins_preserve_original_http_version() {
-        let uri: Uri = "http://example.com/"
-            .parse()
-            .expect("parse HTTP fixture URI");
-
+    fn absent_version_marker_preserves_the_wire_version() {
         assert_eq!(
-            outbound_version_override(&uri, Version::HTTP_2),
-            Some(Version::HTTP_2)
+            outbound_http_version(None, Version::HTTP_11),
+            Version::HTTP_11
+        );
+        assert_eq!(
+            outbound_http_version(None, Version::HTTP_2),
+            Version::HTTP_2
         );
     }
 
     #[test]
-    fn http1_origins_preserve_original_http_version() {
-        let uri: Uri = "https://example.com/"
-            .parse()
-            .expect("parse HTTPS fixture URI");
-
-        assert_eq!(
-            outbound_version_override(&uri, Version::HTTP_11),
-            Some(Version::HTTP_11)
+    fn internal_headers_reject_duplicates_and_non_text_values() {
+        let mut duplicates = HeaderMap::new();
+        duplicates.append("x-tlsplus-target", "https://example.com".parse().unwrap());
+        duplicates.append(
+            "x-tlsplus-target",
+            "https://other.example.com".parse().unwrap(),
         );
+        assert!(internal_header(&duplicates, "x-tlsplus-target").is_err());
+
+        let mut invalid = HeaderMap::new();
+        invalid.insert(
+            "x-tlsplus-target",
+            hyper::header::HeaderValue::from_bytes(&[0xff]).unwrap(),
+        );
+        assert!(internal_header(&invalid, "x-tlsplus-target").is_err());
     }
 }

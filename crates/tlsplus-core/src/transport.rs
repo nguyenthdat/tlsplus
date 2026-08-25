@@ -46,19 +46,19 @@ pub(crate) fn get_wreq_client(profile_name: &str) -> Result<Arc<WreqClient>, Str
         .map(crate::profiles::TlsProfile::pool_key)
         .unwrap_or_else(|| "default".to_owned());
 
-    if let Some(client) = CLIENT_CACHE
+    let cached = CLIENT_CACHE
         .lock()
-        .map_err(|e| format!("client cache lock poisoned: {e}"))?
+        .map_err(|error| format!("client cache lock poisoned: {error}"))?
         .get(&pool_key)
-        .cloned()
-    {
+        .cloned();
+    if let Some(client) = cached {
         return Ok(client);
     }
 
     let client = build_wreq_client(canonical)?;
     let mut cache = CLIENT_CACHE
         .lock()
-        .map_err(|e| format!("client cache lock poisoned: {e}"))?;
+        .map_err(|error| format!("client cache lock poisoned: {error}"))?;
     Ok(Arc::clone(cache.entry(pool_key).or_insert(client)))
 }
 
