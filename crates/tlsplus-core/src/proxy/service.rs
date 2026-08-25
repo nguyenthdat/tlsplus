@@ -2,13 +2,20 @@ use std::convert::Infallible;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use hyper::{Request, Response, StatusCode, Uri, Version, body::Incoming};
+use hyper::{HeaderMap, Method, Request, Response, StatusCode, Uri, Version, body::Incoming};
 use tokio::sync::mpsc;
 
 use super::websocket::{BridgeJob, UpgradeRequest};
 
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub(crate) type ServerBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeclaredHttpVersion {
+    Absent,
+    Http2,
+    Invalid,
+}
 
 pub(crate) fn boxed_error(message: &str) -> ServerBody {
     Full::new(Bytes::copy_from_slice(message.as_bytes()))
@@ -35,14 +42,30 @@ pub(crate) async fn proxy_service(
     request: Request<Incoming>,
     bridge_tx: mpsc::Sender<BridgeJob>,
 ) -> Result<Response<ServerBody>, Infallible> {
-    if !declared_version_matches(&request) {
+    let declared_version = match declared_http_version(request.headers()) {
+        DeclaredHttpVersion::Absent => None,
+        DeclaredHttpVersion::Http2 => Some(Version::HTTP_2),
+        DeclaredHttpVersion::Invalid => {
+            return Ok(error_response(
+                StatusCode::BAD_REQUEST,
+                "Invalid X-Tlsplus-Http-Version header",
+            ));
+        }
+    };
+    let wire_version = request.version();
+    let upgrade = super::websocket::classify(&request);
+    let tunnel_requires_matching_version =
+        request.method() == Method::CONNECT || !matches!(&upgrade, UpgradeRequest::None);
+    if tunnel_requires_matching_version
+        && declared_version.is_some_and(|version| version != wire_version)
+    {
         return Ok(error_response(
             StatusCode::BAD_REQUEST,
             "HTTP version changed between Burp and the TLS+ proxy",
         ));
     }
 
-    match super::websocket::classify(&request) {
+    match upgrade {
         UpgradeRequest::WebSocket(transport) => {
             return Ok(super::websocket::proxy(request, bridge_tx, transport).await);
         }
@@ -108,7 +131,8 @@ pub(crate) async fn proxy_service(
             headers
         });
 
-    let outbound_version = outbound_version_override(&uri, parts.version);
+    let original_version = declared_version.unwrap_or(parts.version);
+    let outbound_version = outbound_version_override(&uri, original_version);
     let outbound = client.request(parts.method, uri);
     let outbound = match outbound_version {
         Some(version) => outbound.version(version),
@@ -138,21 +162,22 @@ pub(crate) async fn proxy_service(
     Ok(convert_response(response))
 }
 
-fn outbound_version_override(uri: &Uri, inbound: Version) -> Option<Version> {
-    (uri.scheme_str() == Some("http")).then_some(inbound)
+fn outbound_version_override(_uri: &Uri, original: Version) -> Option<Version> {
+    Some(original)
 }
 
-fn declared_version_matches(request: &Request<Incoming>) -> bool {
-    match request
-        .headers()
-        .get("x-tlsplus-http-version")
-        .and_then(|value| value.to_str().ok())
-    {
-        Some(version) if version.eq_ignore_ascii_case("HTTP/2") => {
-            request.version() == Version::HTTP_2
-        }
-        Some(_) => false,
-        None => true,
+fn declared_http_version(headers: &HeaderMap) -> DeclaredHttpVersion {
+    let mut values = headers.get_all("x-tlsplus-http-version").iter();
+    let Some(value) = values.next() else {
+        return DeclaredHttpVersion::Absent;
+    };
+    if values.next().is_some() {
+        return DeclaredHttpVersion::Invalid;
+    }
+
+    match value.to_str() {
+        Ok(version) if version.eq_ignore_ascii_case("HTTP/2") => DeclaredHttpVersion::Http2,
+        Ok(_) | Err(_) => DeclaredHttpVersion::Invalid,
     }
 }
 
@@ -177,16 +202,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn https_origins_negotiate_http_version_with_alpn() {
+    fn https_origins_preserve_original_http_version() {
         let uri: Uri = "https://example.com/"
             .parse()
             .expect("parse HTTPS fixture URI");
 
-        assert_eq!(outbound_version_override(&uri, Version::HTTP_2), None);
+        assert_eq!(
+            outbound_version_override(&uri, Version::HTTP_2),
+            Some(Version::HTTP_2)
+        );
     }
 
     #[test]
-    fn cleartext_origins_preserve_ingress_http_version() {
+    fn cleartext_origins_preserve_original_http_version() {
         let uri: Uri = "http://example.com/"
             .parse()
             .expect("parse HTTP fixture URI");
@@ -194,6 +222,18 @@ mod tests {
         assert_eq!(
             outbound_version_override(&uri, Version::HTTP_2),
             Some(Version::HTTP_2)
+        );
+    }
+
+    #[test]
+    fn http1_origins_preserve_original_http_version() {
+        let uri: Uri = "https://example.com/"
+            .parse()
+            .expect("parse HTTPS fixture URI");
+
+        assert_eq!(
+            outbound_version_override(&uri, Version::HTTP_11),
+            Some(Version::HTTP_11)
         );
     }
 }

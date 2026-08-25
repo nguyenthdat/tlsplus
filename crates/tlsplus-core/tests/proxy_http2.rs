@@ -17,6 +17,79 @@ use tokio::{
 static TEST_MUTEX: Mutex<()> = Mutex::const_new(());
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn preserves_http1_across_both_proxy_legs() {
+    let _guard = TEST_MUTEX.lock().await;
+
+    // Given: an HTTP/1.1-only upstream that records the received protocol version.
+    let upstream = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP/1.1 upstream");
+    let upstream_addr = upstream.local_addr().expect("upstream address");
+    let (observed_tx, observed_rx) = oneshot::channel();
+    let upstream_task = tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.expect("accept upstream client");
+        let observed_tx = Arc::new(std::sync::Mutex::new(Some(observed_tx)));
+        let service = service_fn(move |request: Request<Incoming>| {
+            if let Some(sender) = observed_tx.lock().expect("lock protocol observer").take() {
+                let _ = sender.send(request.version());
+            }
+            async move { Ok::<_, Infallible>(Response::new(Full::new(Bytes::new()))) }
+        });
+        hyper::server::conn::http1::Builder::new()
+            .serve_connection(TokioIo::new(stream), service)
+            .await
+            .expect("serve HTTP/1.1 upstream connection");
+    });
+
+    let proxy_addr = support::ephemeral_listen_addr();
+    let _ = stop_local_server();
+    let started = start_local_server(proxy_addr.clone());
+    assert!(
+        started.running,
+        "failed to start TLS+ proxy: {}",
+        started.message
+    );
+    let mut stream = TcpStream::connect(&proxy_addr)
+        .await
+        .expect("connect HTTP/1.1 client to TLS+");
+
+    // When: a regular HTTP/1.1 request is forwarded through TLS+.
+    let request = format!(
+        "GET /resource HTTP/1.1\r\n\
+         Host: 127.0.0.1\r\n\
+         X-Tlsplus-Target: http://{upstream_addr}/resource\r\n\
+         X-Tlsplus-Profile: pass-through\r\n\
+         Connection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write HTTP/1.1 request");
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
+        .await
+        .expect("proxy response timed out")
+        .expect("read proxy response");
+
+    // Then: both proxy legs remain HTTP/1.1.
+    let response = String::from_utf8(response).expect("HTTP response is UTF-8");
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "unexpected response: {response}"
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), observed_rx)
+            .await
+            .expect("upstream protocol observation timed out")
+            .expect("observe upstream version"),
+        Version::HTTP_11
+    );
+    assert!(!stop_local_server().running);
+    upstream_task.abort();
+    let _ = upstream_task.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn preserves_http2_across_both_proxy_legs() {
     let _guard = TEST_MUTEX.lock().await;
 
@@ -105,11 +178,31 @@ async fn preserves_http2_across_both_proxy_legs() {
     let _ = upstream_task.await;
 }
 
-#[tokio::test]
-async fn rejects_http2_marker_on_an_http1_connection() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn preserves_http2_origin_across_an_http1_proxy_hop() {
     let _guard = TEST_MUTEX.lock().await;
 
-    // Given: a running TLS+ proxy and an HTTP/1.1 client claiming the request originated as HTTP/2.
+    // Given: an HTTP/2-only upstream and a local proxy hop serialized as HTTP/1.1.
+    let upstream = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP/2 upstream");
+    let upstream_addr = upstream.local_addr().expect("upstream address");
+    let (observed_tx, observed_rx) = oneshot::channel();
+    let upstream_task = tokio::spawn(async move {
+        let (stream, _) = upstream.accept().await.expect("accept upstream client");
+        let observed_tx = Arc::new(std::sync::Mutex::new(Some(observed_tx)));
+        let service = service_fn(move |request: Request<Incoming>| {
+            if let Some(sender) = observed_tx.lock().expect("lock protocol observer").take() {
+                let _ = sender.send(request.version());
+            }
+            async move { Ok::<_, Infallible>(Response::new(Full::new(Bytes::new()))) }
+        });
+        hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), service)
+            .await
+            .expect("serve HTTP/2 upstream connection");
+    });
+
     let proxy_addr = support::ephemeral_listen_addr();
     let _ = stop_local_server();
     let started = start_local_server(proxy_addr.clone());
@@ -122,25 +215,79 @@ async fn rejects_http2_marker_on_an_http1_connection() {
         .await
         .expect("connect HTTP/1.1 client to TLS+");
 
-    // When: the downgraded request is submitted.
+    // When: an HTTP/2-origin request crosses the HTTP/1.1 loopback hop.
+    let request = format!(
+        "GET /resource HTTP/1.1\r\n\
+         Host: 127.0.0.1\r\n\
+         X-Tlsplus-Target: http://{upstream_addr}/resource\r\n\
+         X-Tlsplus-Profile: pass-through\r\n\
+         X-Tlsplus-Http-Version: HTTP/2\r\n\
+         Connection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write HTTP/2-origin request");
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
+        .await
+        .expect("proxy response timed out")
+        .expect("read proxy response");
+
+    // Then: the local hop succeeds while the original HTTP/2 version reaches upstream.
+    let response = String::from_utf8(response).expect("HTTP response is UTF-8");
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "unexpected response: {response}"
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), observed_rx)
+            .await
+            .expect("upstream protocol observation timed out")
+            .expect("observe upstream version"),
+        Version::HTTP_2
+    );
+    assert!(!stop_local_server().running);
+    upstream_task.abort();
+    let _ = upstream_task.await;
+}
+
+#[tokio::test]
+async fn rejects_http2_connect_marker_on_an_http1_proxy_hop() {
+    let _guard = TEST_MUTEX.lock().await;
+
+    // Given: a running TLS+ proxy reached through an HTTP/1.1 loopback connection.
+    let proxy_addr = support::ephemeral_listen_addr();
+    let _ = stop_local_server();
+    let started = start_local_server(proxy_addr.clone());
+    assert!(
+        started.running,
+        "failed to start TLS+ proxy: {}",
+        started.message
+    );
+    let mut stream = TcpStream::connect(&proxy_addr)
+        .await
+        .expect("connect HTTP/1.1 client to TLS+");
+
+    // When: an HTTP/2 CONNECT request is claimed across that incompatible hop.
     stream
         .write_all(
-            b"GET /resource HTTP/1.1\r\n\
-              Host: 127.0.0.1\r\n\
-              X-Tlsplus-Target: http://127.0.0.1:1/resource\r\n\
+            b"CONNECT example.com:443 HTTP/1.1\r\n\
+              Host: example.com:443\r\n\
+              X-Tlsplus-Target: https://example.com/\r\n\
               X-Tlsplus-Profile: pass-through\r\n\
               X-Tlsplus-Http-Version: HTTP/2\r\n\
               Connection: close\r\n\r\n",
         )
         .await
-        .expect("write downgraded request");
+        .expect("write incompatible CONNECT request");
     let mut response = Vec::new();
     tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut response))
         .await
-        .expect("downgrade rejection timed out")
-        .expect("read downgrade rejection");
+        .expect("CONNECT rejection timed out")
+        .expect("read CONNECT rejection");
 
-    // Then: TLS+ rejects the downgrade instead of silently forwarding over HTTP/1.1.
+    // Then: TLS+ keeps tunnel semantics strict instead of reconstructing HTTP/2 CONNECT.
     let response = String::from_utf8(response).expect("HTTP response is UTF-8");
     assert!(
         response.starts_with("HTTP/1.1 400"),

@@ -25,10 +25,3 @@ _workspace**/
 
 # Local opencode project config
 .DS_Store
-_research_workspace/
-.playwright-mcp/
-_ja4_capture_workspace/
-test-results/
-.cloakbrowser-artifacts/
-.omo/
-artifacts/browser-profiles/
